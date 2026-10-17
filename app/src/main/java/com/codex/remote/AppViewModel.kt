@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.codex.remote.data.rpc.AppServerEvent
 import com.codex.remote.data.rpc.CodexRpcClient
+import com.codex.remote.data.rpc.RpcException
+import com.codex.remote.data.rpc.isActiveWriterConflict
 import com.codex.remote.data.ssh.SshAppServerTransportFactory
 import com.codex.remote.data.ssh.UnknownHostKeyException
 import com.codex.remote.data.store.ConnectionStore
@@ -32,10 +34,12 @@ import com.codex.remote.domain.groupThreadsByProject
 import com.codex.remote.domain.mergeTimelineHistory
 import com.codex.remote.domain.composerToken
 import com.codex.remote.domain.containsComposerToken
+import com.codex.remote.domain.isResumableTurnStatus
 import com.codex.remote.domain.withThreadArchived
 import com.codex.remote.domain.withThreadRenamed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,6 +57,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private var rpc: CodexRpcClient? = null
     private var eventJob: Job? = null
+    private var externalThreadPollJob: Job? = null
     private var didRestoreLastConnection = false
 
     init {
@@ -149,6 +154,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     composerCatalogError = null,
                     selectedProjectPath = null,
                     selectedThreadId = null,
+                    canResumeTurn = false,
                     threadGoal = null,
                     isGoalLoading = false,
                     goalError = null,
@@ -176,6 +182,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     threadTokenUsage = null,
                     isStatusLoading = false,
                     statusError = null,
+                    isExternalWriterSnapshot = false,
+                    isStoppingTurn = false,
+                    isExternalSnapshotRefreshing = false,
+                    externalSnapshotUpdatedAt = null,
+                    externalSnapshotError = null,
                     pendingHostKeyFingerprint = null,
                     notice = null,
                 )
@@ -283,6 +294,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun disconnectInternal(clearActive: Boolean) {
         eventJob?.cancel()
         eventJob = null
+        externalThreadPollJob?.cancel()
+        externalThreadPollJob = null
         rpc?.close()
         rpc = null
         _state.update {
@@ -332,6 +345,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 statusError = null,
                 isTurnRunning = false,
                 activeTurnId = null,
+                canResumeTurn = false,
+                isExternalWriterSnapshot = false,
+                isStoppingTurn = false,
+                isExternalSnapshotRefreshing = false,
+                externalSnapshotUpdatedAt = null,
+                externalSnapshotError = null,
                 pendingApproval = null,
                 pendingHostKeyFingerprint = null,
             )
@@ -339,6 +358,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newThread() {
+        externalThreadPollJob?.cancel()
+        externalThreadPollJob = null
         _state.update { state ->
             val projectPath = state.selectedProjectPath ?: state.projects.firstOrNull()?.path
             if (state.remoteAccount?.canRunCodex != true) {
@@ -349,6 +370,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 state.copy(
                     selectedProjectPath = projectPath,
                     selectedThreadId = null,
+                    isTurnRunning = false,
+                    activeTurnId = null,
+                    canResumeTurn = false,
                     threadGoal = null,
                     isGoalLoading = false,
                     goalError = null,
@@ -360,16 +384,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     olderHistoryError = null,
                     consumedHistoryCursors = emptySet(),
                     selectedCollaborationMode = state.defaultCollaborationMode(),
+                    isExternalWriterSnapshot = false,
+                    isStoppingTurn = false,
+                    isExternalSnapshotRefreshing = false,
+                    externalSnapshotUpdatedAt = null,
+                    externalSnapshotError = null,
                 )
             }
         }
     }
 
     fun selectProject(project: RemoteProject) {
+        externalThreadPollJob?.cancel()
+        externalThreadPollJob = null
         _state.update {
             it.copy(
                 selectedProjectPath = project.path,
                 selectedThreadId = null,
+                isTurnRunning = false,
+                activeTurnId = null,
+                canResumeTurn = false,
                 threadGoal = null,
                 isGoalLoading = false,
                 goalError = null,
@@ -381,6 +415,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 olderHistoryError = null,
                 consumedHistoryCursors = emptySet(),
                 selectedCollaborationMode = it.defaultCollaborationMode(),
+                isExternalWriterSnapshot = false,
+                isStoppingTurn = false,
+                isExternalSnapshotRefreshing = false,
+                externalSnapshotUpdatedAt = null,
+                externalSnapshotError = null,
             )
         }
     }
@@ -388,6 +427,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun selectThread(thread: RemoteThread) {
         if (_state.value.activeConnection == null) return
         val client = rpc ?: return
+        externalThreadPollJob?.cancel()
+        externalThreadPollJob = null
         viewModelScope.launch {
             val projectPath = _state.value.projects
                 .firstOrNull { project -> project.threads.any { it.id == thread.id } }
@@ -410,19 +451,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     isBusy = true,
                     isTurnRunning = thread.status.isRemoteThreadActive(),
                     activeTurnId = null,
+                    canResumeTurn = false,
+                    isExternalWriterSnapshot = false,
+                    isStoppingTurn = false,
+                    isExternalSnapshotRefreshing = false,
+                    externalSnapshotUpdatedAt = null,
+                    externalSnapshotError = null,
                 )
             }
-            val session = runCatching { client.resumeThread(thread.id, thread.cwd) }
-                .getOrElse { error ->
+            val resumeResult = runCatching { client.resumeThread(thread.id, thread.cwd) }
+            var externalWriter = false
+            val session = resumeResult.getOrElse { resumeError ->
+                if (!resumeError.isActiveWriterConflict()) {
                     _state.update { state ->
-                        if (state.selectedThreadId == thread.id) state.copy(isGoalLoading = false) else state
+                        if (state.selectedThreadId == thread.id) {
+                            state.copy(isGoalLoading = false, isBusy = false)
+                        } else {
+                            state
+                        }
                     }
-                    showError(error)
+                    showError(resumeError)
                     return@launch
                 }
+                externalWriter = true
+                runCatching { client.readThreadForViewing(thread.id, thread.cwd) }
+                    .getOrElse { readError ->
+                        _state.update { state ->
+                            if (state.selectedThreadId == thread.id) {
+                                state.copy(isGoalLoading = false, isBusy = false)
+                            } else {
+                                state
+                            }
+                        }
+                        showError(readError)
+                        return@launch
+                    }
+            }
+            if (_state.value.selectedThreadId != thread.id) return@launch
             _state.update { state ->
                 if (state.selectedThreadId != thread.id) return@update state
                 val model = state.models.firstOrNull { it.id == session.model }
+                val snapshotStatus = session.threadStatus ?: thread.status
                 state.copy(
                     timeline = mergeTimelineHistory(session.timeline, state.timeline),
                     olderHistoryCursor = session.olderHistoryCursor,
@@ -431,6 +500,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     olderHistoryError = null,
                     consumedHistoryCursors = emptySet(),
                     isBusy = false,
+                    isGoalLoading = !externalWriter,
+                    isTurnRunning = session.activeTurnId != null || snapshotStatus.isRemoteThreadActive(),
+                    activeTurnId = session.activeTurnId,
+                    canResumeTurn = session.latestTurnStatus.isResumableTurnStatus(),
+                    isExternalWriterSnapshot = externalWriter,
+                    isStoppingTurn = false,
+                    isExternalSnapshotRefreshing = false,
+                    externalSnapshotUpdatedAt = if (externalWriter) System.currentTimeMillis() else null,
+                    externalSnapshotError = null,
+                    threads = if (externalWriter && snapshotStatus.isNotBlank()) {
+                        state.threads.map { candidate ->
+                            if (candidate.id == thread.id) candidate.copy(status = snapshotStatus) else candidate
+                        }
+                    } else {
+                        state.threads
+                    },
                     selectedModel = model?.id ?: state.selectedModel,
                     selectedReasoningEffort = session.reasoningEffort
                         ?.takeIf { effort -> model?.supports(effort) == true }
@@ -446,6 +531,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     approvalPolicy = session.approvalPolicy ?: state.approvalPolicy,
                     approvalsReviewer = session.approvalsReviewer ?: state.approvalsReviewer,
                 )
+            }
+            if (externalWriter) {
+                startExternalThreadPolling(client, thread.id, thread.cwd)
+                return@launch
             }
             runCatching { client.getThreadGoal(thread.id) }
                 .onSuccess { goal ->
@@ -483,6 +572,90 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
         }
+    }
+
+    fun refreshExternalThreadSnapshot() {
+        val client = rpc ?: return
+        val snapshot = _state.value
+        if (!snapshot.isExternalWriterSnapshot || snapshot.isExternalSnapshotRefreshing) return
+        val thread = snapshot.threads.firstOrNull { it.id == snapshot.selectedThreadId } ?: return
+        viewModelScope.launch { refreshExternalThreadSnapshot(client, thread.id, thread.cwd) }
+    }
+
+    private fun startExternalThreadPolling(client: CodexRpcClient, threadId: String, cwd: String) {
+        externalThreadPollJob?.cancel()
+        externalThreadPollJob = viewModelScope.launch {
+            while (_state.value.selectedThreadId == threadId && _state.value.isExternalWriterSnapshot) {
+                delay(EXTERNAL_THREAD_REFRESH_INTERVAL_MS)
+                if (_state.value.selectedThreadId != threadId || !_state.value.isExternalWriterSnapshot) break
+                refreshExternalThreadSnapshot(client, threadId, cwd)
+            }
+        }
+    }
+
+    private suspend fun refreshExternalThreadSnapshot(client: CodexRpcClient, threadId: String, cwd: String) {
+        if (_state.value.selectedThreadId != threadId || !_state.value.isExternalWriterSnapshot) return
+        _state.update { state ->
+            if (state.selectedThreadId == threadId) {
+                state.copy(isExternalSnapshotRefreshing = true, externalSnapshotError = null)
+            } else {
+                state
+            }
+        }
+        runCatching { client.readThreadForViewing(threadId, cwd) }
+            .onSuccess { session ->
+                _state.update { state ->
+                    if (state.selectedThreadId != threadId || !state.isExternalWriterSnapshot) {
+                        return@update state
+                    }
+                    val reportedStatus = session.threadStatus
+                    val existingStatus = state.threads.firstOrNull { it.id == threadId }?.status
+                    val effectiveStatus = reportedStatus ?: existingStatus
+                    val taskIsRunning = if (session.activeTurnId != null) {
+                        true
+                    } else if (reportedStatus != null) {
+                        reportedStatus.isRemoteThreadActive()
+                    } else {
+                        effectiveStatus?.isRemoteThreadActive() ?: state.isTurnRunning
+                    }
+                    state.copy(
+                        timeline = mergeTimelineHistory(state.timeline, session.timeline),
+                        isTurnRunning = taskIsRunning,
+                        canResumeTurn = false,
+                        activeTurnId = session.activeTurnId
+                            ?: state.activeTurnId.takeIf {
+                                taskIsRunning
+                            },
+                        isStoppingTurn = if (effectiveStatus.equals("idle", ignoreCase = true)) {
+                            false
+                        } else {
+                            state.isStoppingTurn
+                        },
+                        threads = if (reportedStatus != null) {
+                            state.threads.map { candidate ->
+                                if (candidate.id == threadId) candidate.copy(status = reportedStatus) else candidate
+                            }
+                        } else {
+                            state.threads
+                        },
+                        isExternalSnapshotRefreshing = false,
+                        externalSnapshotUpdatedAt = System.currentTimeMillis(),
+                        externalSnapshotError = null,
+                    )
+                }
+            }
+            .onFailure { error ->
+                _state.update { state ->
+                    if (state.selectedThreadId == threadId && state.isExternalWriterSnapshot) {
+                        state.copy(
+                            isExternalSnapshotRefreshing = false,
+                            externalSnapshotError = friendlyError(error),
+                        )
+                    } else {
+                        state
+                    }
+                }
+            }
     }
 
     fun loadOlderHistory() {
@@ -563,16 +736,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.activeConnection == null) return
         val client = rpc ?: return
         val currentState = _state.value
+        if (currentState.isExternalWriterSnapshot) {
+            _state.update {
+                it.copy(notice = "此对话目前是只读快照；请让 Android 连接到持有该对话的共享 Codex 服务后再继续")
+            }
+            return
+        }
         if (currentState.remoteAccount?.canRunCodex != true) {
             _state.update { it.copy(notice = "远端 Codex 尚未登录") }
             return
         }
+        if (currentState.isStoppingTurn) {
+            _state.update { it.copy(notice = "正在停止当前任务，请稍后再发送消息") }
+            return
+        }
         if (asGoal && prompt.isEmpty()) {
-            _state.update { it.copy(notice = "Goal 需要包含文字目标") }
+            _state.update { it.copy(notice = "目标内容不能为空") }
             return
         }
         if (asGoal && currentState.isTurnRunning) {
-            _state.update { it.copy(notice = "当前任务运行期间不能设置 Goal") }
+            _state.update { it.copy(notice = "当前任务运行期间不能设置目标") }
             return
         }
         val selectedModel = currentState.selectedModel
@@ -599,7 +782,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val steeringThreadId = currentState.selectedThreadId.takeIf { currentState.isTurnRunning }
         val steeringTurnId = currentState.activeTurnId.takeIf { currentState.isTurnRunning }
         if (currentState.isTurnRunning && (steeringThreadId == null || steeringTurnId == null)) {
-            _state.update { it.copy(notice = "正在恢复运行中的任务，请等远端 turn id 同步后再追加消息") }
+            _state.update { it.copy(notice = "正在恢复运行中的任务，请等远端任务 ID 同步后再追加消息") }
             return
         }
         viewModelScope.launch {
@@ -611,7 +794,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     append(prompt)
                     attachments.forEach { attachment ->
                         if (isNotEmpty()) append('\n')
-                        append("[Image: ${attachment.displayName}]")
+                        append("[图片：${attachment.displayName}]")
                     }
                 },
                 isGoal = asGoal,
@@ -620,6 +803,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     timeline = it.timeline + userItem,
                     isTurnRunning = if (asGoal) it.isTurnRunning else true,
+                    canResumeTurn = if (asGoal) it.canResumeTurn else false,
                     isGoalLoading = if (asGoal) true else it.isGoalLoading,
                     goalError = if (asGoal) null else it.goalError,
                     notice = null,
@@ -671,7 +855,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@runCatching
                 }
-                client.startTurn(
+                val startedTurnId = client.startTurn(
                     threadId = threadId,
                     text = prompt,
                     cwd = cwd,
@@ -685,6 +869,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     mentions = mentions,
                     attachments = attachments,
                 )
+                startedTurnId?.let { turnId ->
+                    _state.update { state ->
+                        if (state.selectedThreadId == threadId && state.isTurnRunning) {
+                            state.copy(activeTurnId = turnId)
+                        } else {
+                            state
+                        }
+                    }
+                }
             }.onSuccess {
                 if (steeringThreadId != null) {
                     _state.update { it.copy(notice = "已追加到当前运行中的任务") }
@@ -694,6 +887,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         timeline = it.timeline.filterNot { item -> item.id == localItemId },
                         isTurnRunning = if (asGoal) it.isTurnRunning else steeringThreadId != null,
+                        canResumeTurn = if (asGoal) {
+                            it.canResumeTurn
+                        } else {
+                            currentState.canResumeTurn && steeringThreadId == null
+                        },
                         activeTurnId = if (asGoal || steeringThreadId != null) it.activeTurnId else null,
                         isGoalLoading = if (asGoal) false else it.isGoalLoading,
                         goalError = if (asGoal) friendlyGoalError(error) else it.goalError,
@@ -701,7 +899,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (asGoal) {
                     _state.update {
-                        it.copy(notice = "Failed to set goal: ${friendlyGoalError(error)}")
+                        it.copy(notice = "设置目标失败：${friendlyGoalError(error)}")
                     }
                 } else {
                     showError(error)
@@ -842,7 +1040,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(notice = "请先打开一个远端任务再继续到新任务") }
             return
         }
-        if (snapshot.isTurnRunning) {
+        if (snapshot.isTurnRunning && !snapshot.isExternalWriterSnapshot) {
             _state.update { it.copy(notice = "请先停止当前任务，再继续到新任务") }
             return
         }
@@ -861,6 +1059,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     permissionProfile = snapshot.selectedPermissionProfile,
                 )
             }.onSuccess { forked ->
+                externalThreadPollJob?.cancel()
+                externalThreadPollJob = null
                 _state.update { state ->
                     val threads = (listOf(forked.thread) + state.threads).distinctBy { it.id }
                     val model = state.models.firstOrNull { it.id == forked.session.model }
@@ -894,6 +1094,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         approvalPolicy = forked.session.approvalPolicy ?: state.approvalPolicy,
                         approvalsReviewer = forked.session.approvalsReviewer ?: state.approvalsReviewer,
                         isBusy = false,
+                        isTurnRunning = false,
+                        activeTurnId = null,
+                        canResumeTurn = false,
+                        isExternalWriterSnapshot = false,
+                        isStoppingTurn = false,
+                        isExternalSnapshotRefreshing = false,
+                        externalSnapshotUpdatedAt = null,
+                        externalSnapshotError = null,
                         notice = "已继续到新的远端任务",
                     )
                 }
@@ -917,18 +1125,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            _state.update { it.copy(isTurnRunning = true, notice = null) }
+            _state.update { it.copy(isTurnRunning = true, canResumeTurn = false, notice = null) }
             runCatching { client.startReview(threadId, targetKind, targetValue) }
                 .onSuccess { review ->
                     _state.update {
                         it.copy(
                             isTurnRunning = true,
                             activeTurnId = review.turnId,
+                            canResumeTurn = false,
                         )
                     }
                 }
                 .onFailure { error ->
-                    _state.update { it.copy(isTurnRunning = false, activeTurnId = null) }
+                    _state.update {
+                        it.copy(isTurnRunning = false, activeTurnId = null, canResumeTurn = false)
+                    }
                     showError(error)
                 }
         }
@@ -1059,13 +1270,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun showGoalRequirement() = _state.update {
-        it.copy(notice = "请先发送第一条消息创建远端任务，再使用 /goal 设置 Goal")
+        it.copy(notice = "请先发送第一条消息创建远端任务，再使用 /goal 设置目标")
     }
 
     fun setThreadGoal(objective: String) {
         val trimmedObjective = objective.trim()
         if (trimmedObjective.isEmpty()) {
-            _state.update { it.copy(goalError = "Goal 不能为空") }
+            _state.update { it.copy(goalError = "目标不能为空") }
             return
         }
         val client = rpc ?: return
@@ -1090,7 +1301,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }.onFailure { error ->
-                updateGoalFailure(threadId, "Failed to set goal", error)
+                updateGoalFailure(threadId, "设置目标失败", error)
             }
         }
     }
@@ -1114,7 +1325,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .onFailure { error ->
-                    updateGoalFailure(threadId, "Failed to update goal", error)
+                    updateGoalFailure(threadId, "更新目标失败", error)
                 }
         }
     }
@@ -1135,7 +1346,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .onFailure { error ->
-                    updateGoalFailure(threadId, "Failed to clear goal", error)
+                    updateGoalFailure(threadId, "清除目标失败", error)
                 }
         }
     }
@@ -1164,10 +1375,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun interruptTurn() {
         val client = rpc ?: return
-        val threadId = _state.value.selectedThreadId ?: return
-        val turnId = _state.value.activeTurnId ?: return
+        val current = _state.value
+        if (current.isExternalWriterSnapshot) {
+            _state.update {
+                it.copy(notice = "此对话目前是只读快照，当前连接无法停止另一独立 app-server 中的任务")
+            }
+            return
+        }
+        val threadId = current.selectedThreadId ?: return
+        val turnId = current.activeTurnId ?: run {
+            _state.update { it.copy(notice = "远端确认任务正在运行，但暂时没有返回可安全停止的任务 ID；请刷新状态后重试") }
+            return
+        }
+        if (current.isStoppingTurn) return
+        _state.update { it.copy(isStoppingTurn = true, notice = "正在请求远端 Codex 暂停当前任务…") }
         viewModelScope.launch {
-            runCatching { client.interruptTurn(threadId, turnId) }.onFailure(::showError)
+            runCatching { client.interruptTurn(threadId, turnId) }
+                .onSuccess {
+                    _state.update { state ->
+                        if (state.selectedThreadId == threadId && state.activeTurnId == turnId) {
+                            state.copy(
+                                isTurnRunning = false,
+                                activeTurnId = null,
+                                canResumeTurn = true,
+                                isStoppingTurn = false,
+                                timeline = state.timeline.withRunningItemsCompleted(),
+                                notice = "任务已暂停；点击继续按钮可在当前对话接着处理",
+                            )
+                        } else {
+                            state.copy(isStoppingTurn = false)
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(isStoppingTurn = false) }
+                    showError(error)
+                }
         }
     }
 
@@ -1338,6 +1581,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             state.copy(
                                 isTurnRunning = event.running,
                                 activeTurnId = if (event.running) event.turnId else null,
+                                canResumeTurn = if (event.running) {
+                                    false
+                                } else {
+                                    event.turnStatus
+                                        ?.takeIf(String::isNotBlank)
+                                        ?.isResumableTurnStatus()
+                                        ?: (state.isStoppingTurn || state.canResumeTurn)
+                                },
+                                isStoppingTurn = false,
                                 timeline = if (event.running) {
                                     state.timeline
                                 } else {
@@ -1387,7 +1639,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 val marker = TimelineItem(
                                     id = "compaction-${UUID.randomUUID()}",
                                     kind = TimelineKind.COMPACTION,
-                                    title = "Context compacted",
+                                    title = "上下文已压缩",
                                 )
                                 state.copy(timeline = state.timeline + marker, notice = "任务上下文已压缩")
                             }
@@ -1443,6 +1695,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 notice = event.message,
                                 isTurnRunning = false,
                                 activeTurnId = null,
+                                canResumeTurn = state.isTurnRunning || state.isStoppingTurn || state.canResumeTurn,
+                                isStoppingTurn = false,
                                 timeline = state.timeline.withRunningItemsCompleted(),
                             )
                         } else {
@@ -1504,7 +1758,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 state.copy(
                     isGoalLoading = loading,
                     goalError = message,
-                    notice = "$action: $message",
+                    notice = "$action：$message",
                 )
             } else {
                 state
@@ -1590,6 +1844,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             isOlderHistoryLoading = if (selectedThreadId == null) false else state.isOlderHistoryLoading,
                             olderHistoryError = if (selectedThreadId == null) null else state.olderHistoryError,
                             consumedHistoryCursors = if (selectedThreadId == null) emptySet() else state.consumedHistoryCursors,
+                            isTurnRunning = if (selectedThreadId == null) false else state.isTurnRunning,
+                            activeTurnId = if (selectedThreadId == null) null else state.activeTurnId,
+                            isExternalWriterSnapshot = if (selectedThreadId == null) false else state.isExternalWriterSnapshot,
+                            isStoppingTurn = if (selectedThreadId == null) false else state.isStoppingTurn,
+                            isExternalSnapshotRefreshing = if (selectedThreadId == null) false else state.isExternalSnapshotRefreshing,
+                            externalSnapshotUpdatedAt = if (selectedThreadId == null) null else state.externalSnapshotUpdatedAt,
+                            externalSnapshotError = if (selectedThreadId == null) null else state.externalSnapshotError,
                             connectionMessage = connectionSummary(
                                 projects.size,
                                 threads.size,
@@ -1614,8 +1875,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             withTimeout(45_000) { client.listInstalledPlugins(distinctCwds) }
         }
         val errors = listOfNotNull(
-            skills.exceptionOrNull()?.message?.let { "Skills: $it" },
-            plugins.exceptionOrNull()?.message?.let { "Plugins: $it" },
+            skills.exceptionOrNull()?.message?.let { "技能：$it" },
+            plugins.exceptionOrNull()?.message?.let { "插件：$it" },
         )
         return ComposerCatalog(
             skills = skills.getOrDefault(emptyList()),
@@ -1676,6 +1937,8 @@ private data class ConnectionBootstrap(
     val permissionProfiles: List<com.codex.remote.domain.RemotePermissionProfile>,
 )
 
+private const val EXTERNAL_THREAD_REFRESH_INTERVAL_MS = 5_000L
+
 internal fun AppUiState.acceptsThreadEvent(threadId: String?): Boolean =
     selectedThreadId != null && selectedThreadId == threadId
 
@@ -1685,7 +1948,7 @@ internal fun List<SavedConnection>.lastUsedConnectionOrNull(): SavedConnection? 
 internal fun Throwable.isUnsupportedRpcMethod(method: String): Boolean =
     generateSequence(this) { it.cause }.any { error ->
         val message = error.message.orEmpty()
-        (error as? com.codex.remote.data.rpc.RpcException)?.code == -32601 ||
+        (error as? RpcException)?.code == -32601 ||
             (message.contains(method, ignoreCase = true) &&
                 listOf("unsupported method", "method not found", "unknown method", "not implemented")
                     .any { marker -> message.contains(marker, ignoreCase = true) })

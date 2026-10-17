@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -62,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -73,6 +73,7 @@ import com.codex.remote.domain.ConnectionStatus
 import com.codex.remote.domain.RemotePlatform
 import com.codex.remote.domain.SavedConnection
 import com.codex.remote.domain.validationIssues
+import com.codex.remote.ui.theme.CodexSpacing
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,10 +99,10 @@ fun ConnectionsScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {},
         topBar = {
             TopAppBar(
-                title = { Text("Remote hosts") },
+                title = { Text("远程主机") },
                 navigationIcon = {
                     if (state.activeConnection != null) {
                         IconButton(onClick = onBack) {
@@ -126,10 +127,11 @@ fun ConnectionsScreen(
                 EmptyConnections(onAdd)
             } else {
                 Column(
-                    modifier = Modifier.fillMaxWidth().widthIn(max = 860.dp).padding(horizontal = 20.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth().widthIn(max = 860.dp)
+                        .padding(horizontal = CodexSpacing.xLarge, vertical = CodexSpacing.medium),
+                    verticalArrangement = Arrangement.spacedBy(CodexSpacing.medium),
                 ) {
-                    Text("SSH HOSTS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("SSH 主机", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     state.savedConnections.forEach { connection ->
                         ConnectionRow(
                             connection = connection,
@@ -143,9 +145,9 @@ fun ConnectionsScreen(
                     Spacer(Modifier.height(8.dp))
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(6.dp),
+                        shape = MaterialTheme.shapes.small,
                     ) {
-                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.Top) {
+                        Row(Modifier.padding(CodexSpacing.large), verticalAlignment = Alignment.Top) {
                             Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(10.dp))
                             Text(
@@ -157,6 +159,14 @@ fun ConnectionsScreen(
                     }
                 }
             }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .testTag("top-snackbar-host"),
+            )
         }
     }
 
@@ -195,17 +205,17 @@ private fun EmptyConnections(onAdd: () -> Unit) {
         Surface(
             modifier = Modifier.size(64.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(8.dp),
+            shape = MaterialTheme.shapes.small,
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(30.dp))
             }
         }
         Spacer(Modifier.height(20.dp))
-        Text("Connect a remote host", style = MaterialTheme.typography.headlineSmall)
+        Text("连接远程主机", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Codex runs on the remote host. Projects and conversations are imported automatically after connection.",
+            "Codex 运行在远端主机上。连接后会自动导入项目和对话。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -213,7 +223,7 @@ private fun EmptyConnections(onAdd: () -> Unit) {
         Button(onClick = onAdd) {
             Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Add SSH host")
+            Text("添加 SSH 主机")
         }
     }
 }
@@ -228,18 +238,18 @@ private fun ConnectionRow(
     onDelete: () -> Unit,
 ) {
     Surface(
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            modifier = Modifier.fillMaxWidth().padding(CodexSpacing.large),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Surface(
                 modifier = Modifier.size(40.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(6.dp),
+                shape = MaterialTheme.shapes.small,
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(Icons.Outlined.Router, contentDescription = null, modifier = Modifier.size(21.dp))
@@ -265,7 +275,7 @@ private fun ConnectionRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "All Codex projects and conversations",
+                    "所有 Codex 项目和对话",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -274,7 +284,7 @@ private fun ConnectionRow(
             if (isConnecting) {
                 CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
             } else {
-                TextButton(onClick = onConnect) { Text(if (isActive) "Reconnect" else "Connect") }
+                TextButton(onClick = onConnect) { Text(if (isActive) "重新连接" else "连接") }
             }
             IconButton(onClick = onEdit) { Icon(Icons.Outlined.Edit, contentDescription = "编辑") }
             IconButton(onClick = onDelete) { Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除") }
@@ -314,7 +324,7 @@ private fun ConnectionEditor(
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "关闭")
                     }
                     Text(
-                        if (original == null) "Add SSH host" else "Edit SSH host",
+                        if (original == null) "添加 SSH 主机" else "编辑 SSH 主机",
                         style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.weight(1f),
                     )
@@ -323,44 +333,44 @@ private fun ConnectionEditor(
                 HorizontalDivider()
                 Column(
                     modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).widthIn(max = 720.dp)
-                        .align(Alignment.CenterHorizontally).padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                        .align(Alignment.CenterHorizontally).padding(CodexSpacing.xLarge),
+                    verticalArrangement = Arrangement.spacedBy(CodexSpacing.large),
                 ) {
-                    SectionLabel("CONNECTION")
+                    SectionLabel("连接信息")
                     OutlinedTextField(
                         value = draft.name,
                         onValueChange = { draft = draft.copy(name = it) },
-                        label = { Text("Display name") },
+                        label = { Text("显示名称") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         isError = attemptedSave && ConnectionDraftIssue.CONNECTION_NAME in validationIssues,
                         supportingText = if (attemptedSave && ConnectionDraftIssue.CONNECTION_NAME in validationIssues) {
-                            { Text("Required") }
+                            { Text("必填") }
                         } else null,
                     )
                     Text(
-                        "Projects and conversations are discovered from the remote Codex history.",
+                        "项目和对话会从远端 Codex 历史记录中自动读取。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    SectionLabel("SSH HOST")
+                    SectionLabel("SSH 主机")
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(
                             value = draft.host,
                             onValueChange = { draft = draft.copy(host = it) },
-                            label = { Text("Host") },
+                            label = { Text("主机地址") },
                             placeholder = { Text("devbox.example.com") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
                             isError = attemptedSave && ConnectionDraftIssue.HOST in validationIssues,
                             supportingText = if (attemptedSave && ConnectionDraftIssue.HOST in validationIssues) {
-                                { Text("Required") }
+                                { Text("必填") }
                             } else null,
                         )
                         OutlinedTextField(
                             value = draft.port,
                             onValueChange = { draft = draft.copy(port = it.filter(Char::isDigit)) },
-                            label = { Text("Port") },
+                            label = { Text("端口") },
                             singleLine = true,
                             modifier = Modifier.width(104.dp),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -373,26 +383,26 @@ private fun ConnectionEditor(
                     OutlinedTextField(
                         value = draft.username,
                         onValueChange = { draft = draft.copy(username = it) },
-                        label = { Text("Username") },
+                            label = { Text("用户名") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         isError = attemptedSave && ConnectionDraftIssue.USERNAME in validationIssues,
                         supportingText = if (attemptedSave && ConnectionDraftIssue.USERNAME in validationIssues) {
-                            { Text("Required") }
+                            { Text("必填") }
                         } else null,
                     )
-                    SectionLabel("AUTHENTICATION")
+                    SectionLabel("身份验证")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
                             selected = draft.authType == AuthType.PASSWORD,
                             onClick = { draft = draft.copy(authType = AuthType.PASSWORD) },
-                            label = { Text("Password") },
+                            label = { Text("密码") },
                             leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(16.dp)) },
                         )
                         FilterChip(
                             selected = draft.authType == AuthType.PRIVATE_KEY,
                             onClick = { draft = draft.copy(authType = AuthType.PRIVATE_KEY) },
-                            label = { Text("Private key") },
+                            label = { Text("私钥") },
                             leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp)) },
                         )
                     }
@@ -400,39 +410,39 @@ private fun ConnectionEditor(
                         OutlinedTextField(
                             value = draft.password,
                             onValueChange = { draft = draft.copy(password = it) },
-                            label = { Text(if (original == null) "Password" else "Password (leave blank to keep)") },
+                            label = { Text(if (original == null) "密码" else "密码（留空则保持不变）") },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             isError = attemptedSave && ConnectionDraftIssue.PASSWORD in validationIssues,
                             supportingText = if (attemptedSave && ConnectionDraftIssue.PASSWORD in validationIssues) {
-                                { Text("Required") }
+                                { Text("必填") }
                             } else null,
                         )
                     } else {
                         OutlinedTextField(
                             value = draft.privateKey,
                             onValueChange = { draft = draft.copy(privateKey = it) },
-                            label = { Text(if (original == null) "OpenSSH / PEM private key" else "Private key (leave blank to keep)") },
+                            label = { Text(if (original == null) "OpenSSH / PEM 私钥" else "私钥（留空则保持不变）") },
                             minLines = 5,
                             maxLines = 9,
                             modifier = Modifier.fillMaxWidth(),
                             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                             isError = attemptedSave && ConnectionDraftIssue.PRIVATE_KEY in validationIssues,
                             supportingText = if (attemptedSave && ConnectionDraftIssue.PRIVATE_KEY in validationIssues) {
-                                { Text("Required") }
+                                { Text("必填") }
                             } else null,
                         )
                         OutlinedTextField(
                             value = draft.passphrase,
                             onValueChange = { draft = draft.copy(passphrase = it) },
-                            label = { Text("Key passphrase (optional)") },
+                            label = { Text("私钥口令（可选）") },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    SectionLabel("REMOTE PLATFORM")
+                    SectionLabel("远端系统")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         RemotePlatform.entries.forEach { platform ->
                             FilterChip(
@@ -443,18 +453,18 @@ private fun ConnectionEditor(
                         }
                     }
                     if (draft.hostKeyFingerprint.isNotBlank()) {
-                        SectionLabel("HOST KEY")
+                        SectionLabel("主机密钥")
                         OutlinedTextField(
                             value = draft.hostKeyFingerprint,
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("Pinned fingerprint") },
+                            label = { Text("已保存的指纹") },
                             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                             modifier = Modifier.fillMaxWidth(),
                             trailingIcon = {
                                 TextButton(onClick = {
                                     draft = draft.copy(hostKeyFingerprint = "", clearHostKeyFingerprint = true)
-                                }) { Text("Clear") }
+                                }) { Text("清除") }
                             },
                         )
                     }
@@ -473,11 +483,11 @@ private fun ConnectionEditor(
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(12.dp),
                     horizontalArrangement = Arrangement.End,
                 ) {
-                    TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+                    TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { submit(false) }, enabled = !busy) { Text("Save") }
+                    OutlinedButton(onClick = { submit(false) }, enabled = !busy) { Text("保存") }
                     Spacer(Modifier.width(8.dp))
-                    Button(onClick = { submit(true) }, enabled = !busy) { Text("Save & connect") }
+                    Button(onClick = { submit(true) }, enabled = !busy) { Text("保存并连接") }
                 }
             }
         }
@@ -486,12 +496,12 @@ private fun ConnectionEditor(
 
 private val ConnectionDraftIssue.message: String
     get() = when (this) {
-        ConnectionDraftIssue.CONNECTION_NAME -> "Display name is required."
-        ConnectionDraftIssue.HOST -> "SSH host is required."
-        ConnectionDraftIssue.PORT -> "Port must be between 1 and 65535."
-        ConnectionDraftIssue.USERNAME -> "Username is required."
-        ConnectionDraftIssue.PASSWORD -> "Password is required."
-        ConnectionDraftIssue.PRIVATE_KEY -> "Paste an OpenSSH or PEM private key."
+        ConnectionDraftIssue.CONNECTION_NAME -> "请输入显示名称。"
+        ConnectionDraftIssue.HOST -> "请输入 SSH 主机地址。"
+        ConnectionDraftIssue.PORT -> "端口必须介于 1 到 65535 之间。"
+        ConnectionDraftIssue.USERNAME -> "请输入用户名。"
+        ConnectionDraftIssue.PASSWORD -> "请输入密码。"
+        ConnectionDraftIssue.PRIVATE_KEY -> "请粘贴 OpenSSH 或 PEM 格式的私钥。"
     }
 
 @Composable
@@ -512,7 +522,7 @@ private fun SavedConnection?.toDraft(): ConnectionDraft = if (this == null) Conn
 
 private val RemotePlatform.displayName: String
     get() = when (this) {
-        RemotePlatform.AUTO -> "Auto"
+        RemotePlatform.AUTO -> "自动"
         RemotePlatform.POSIX -> "Linux / macOS"
         RemotePlatform.WINDOWS -> "Windows"
     }

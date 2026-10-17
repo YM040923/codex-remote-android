@@ -51,6 +51,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             onStop = viewModel::interruptTurn,
             onCompactThread = viewModel::compactThread,
             onForkThread = viewModel::forkThread,
+            onRefreshExternalThreadSnapshot = viewModel::refreshExternalThreadSnapshot,
             onStartReview = viewModel::startReview,
             onRunInit = viewModel::runInit,
             onLoadMcpStatus = viewModel::loadMcpStatus,

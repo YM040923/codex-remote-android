@@ -251,6 +251,9 @@ data class RemoteThreadSession(
     val approvalPolicy: String? = null,
     val approvalsReviewer: String? = null,
     val permissionProfile: String? = null,
+    val threadStatus: String? = null,
+    val activeTurnId: String? = null,
+    val latestTurnStatus: String? = null,
 )
 
 data class RemoteThreadHistoryPage(
@@ -436,6 +439,14 @@ data class AppUiState(
     val approvalPolicy: String = "on-request",
     val isTurnRunning: Boolean = false,
     val activeTurnId: String? = null,
+    /** The latest turn ended interrupted/failed, or was explicitly stopped, and can be continued. */
+    val canResumeTurn: Boolean = false,
+    /** Thread is being viewed without acquiring its exclusive resume/writer lease. */
+    val isExternalWriterSnapshot: Boolean = false,
+    val isStoppingTurn: Boolean = false,
+    val isExternalSnapshotRefreshing: Boolean = false,
+    val externalSnapshotUpdatedAt: Long? = null,
+    val externalSnapshotError: String? = null,
     val pendingApproval: ApprovalRequest? = null,
     val pendingHostKeyFingerprint: String? = null,
     val isRestoringLastConnection: Boolean = true,
@@ -453,6 +464,9 @@ internal fun AppUiState.withThreadRenamed(threadId: String, name: String): AppUi
     return copy(threads = renamed, projects = groupThreadsByProject(renamed))
 }
 
+internal fun String?.isResumableTurnStatus(): Boolean =
+    equals("interrupted", ignoreCase = true) || equals("failed", ignoreCase = true)
+
 internal fun AppUiState.withThreadArchived(threadId: String): AppUiState {
     val remaining = threads.filterNot { it.id == threadId }
     val remainingProjects = groupThreadsByProject(remaining)
@@ -469,12 +483,20 @@ internal fun AppUiState.withThreadArchived(threadId: String): AppUiState {
         isGoalLoading = if (archivedSelectedThread) false else isGoalLoading,
         goalError = if (archivedSelectedThread) null else goalError,
         threadTokenUsage = if (archivedSelectedThread) null else threadTokenUsage,
+        isTurnRunning = if (archivedSelectedThread) false else isTurnRunning,
+        activeTurnId = if (archivedSelectedThread) null else activeTurnId,
+        canResumeTurn = if (archivedSelectedThread) false else canResumeTurn,
         timeline = if (archivedSelectedThread) emptyList() else timeline,
         olderHistoryCursor = if (archivedSelectedThread) null else olderHistoryCursor,
         hasOlderHistory = if (archivedSelectedThread) false else hasOlderHistory,
         isOlderHistoryLoading = if (archivedSelectedThread) false else isOlderHistoryLoading,
         olderHistoryError = if (archivedSelectedThread) null else olderHistoryError,
         consumedHistoryCursors = if (archivedSelectedThread) emptySet() else consumedHistoryCursors,
+        isExternalWriterSnapshot = if (archivedSelectedThread) false else isExternalWriterSnapshot,
+        isStoppingTurn = if (archivedSelectedThread) false else isStoppingTurn,
+        isExternalSnapshotRefreshing = if (archivedSelectedThread) false else isExternalSnapshotRefreshing,
+        externalSnapshotUpdatedAt = if (archivedSelectedThread) null else externalSnapshotUpdatedAt,
+        externalSnapshotError = if (archivedSelectedThread) null else externalSnapshotError,
     )
 }
 

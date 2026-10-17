@@ -13,6 +13,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -25,6 +27,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.codex.remote.data.rpc.CodexRpcClient
@@ -81,7 +84,8 @@ class WorkspaceDeviceTest {
 
         composeRule.onAllNodesWithText("Default", substring = true).assertCountEquals(0)
         composeRule.onAllNodesWithText("Plan", substring = true).assertCountEquals(0)
-        composeRule.onNodeWithText("5.6-sol · 极高 · Fast").assertExists()
+        composeRule.onNodeWithText("5.6-sol · 极高 · 快速").assertExists()
+        composeRule.onNodeWithTag(COMPOSER_SEND).assertContentDescriptionEquals("发送")
         composeRule.onNodeWithTag(COMPOSER_CONTEXT).assertContentDescriptionEquals("上下文已使用 64%")
 
         val add = composeRule.onNodeWithTag(COMPOSER_ADD).fetchSemanticsNode().boundsInRoot
@@ -103,6 +107,121 @@ class WorkspaceDeviceTest {
         composeRule.runOnIdle { assertEquals("plan", callbacks.collaborationMode) }
         composeRule.onAllNodesWithText("Default", substring = true).assertCountEquals(0)
         composeRule.onAllNodesWithText("Plan mode", substring = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun composerActionPausesAndContinuesTheSameThreadWithoutLosingDraft() {
+        val state = mutableStateOf(
+            baseState(isTurnRunning = true).copy(
+                activeTurnId = "turn-a",
+            ),
+        )
+        val callbacks = WorkspaceCallbacks()
+        show(state, callbacks)
+
+        composeRule.onNodeWithTag(COMPOSER_INPUT).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_INPUT).performTextInput("检查测试结果")
+        composeRule.onNodeWithTag(COMPOSER_SEND)
+            .assertContentDescriptionEquals("暂停任务")
+            .performClick()
+        composeRule.runOnIdle { assertEquals(1, callbacks.stopRequests) }
+        composeRule.onNodeWithTag(COMPOSER_SEND).assertContentDescriptionEquals("正在暂停任务")
+        assertEquals("检查测试结果", composerText())
+        composeRule.onNodeWithTag("composer-stop").assertDoesNotExist()
+
+        composeRule.runOnIdle {
+            state.value = state.value.copy(
+                isTurnRunning = false,
+                activeTurnId = null,
+                isStoppingTurn = false,
+                canResumeTurn = true,
+            )
+        }
+        composeRule.onNodeWithTag(COMPOSER_SEND)
+            .assertContentDescriptionEquals("继续任务")
+            .performClick()
+        composeRule.runOnIdle {
+            assertEquals(listOf("检查测试结果" to false), callbacks.sentMessages)
+        }
+        assertEquals("", composerText())
+    }
+
+    @Test
+    fun composerActionUsesSendStopAndResumeStatesAndDisablesEmptySend() {
+        val state = mutableStateOf(baseState())
+        val callbacks = WorkspaceCallbacks()
+        show(state, callbacks)
+
+        val action = composeRule.onNodeWithTag(COMPOSER_SEND)
+        action.assertContentDescriptionEquals("发送").assertIsNotEnabled()
+
+        composeRule.onNodeWithTag(COMPOSER_INPUT).performTextInput("继续检查")
+        action.assertContentDescriptionEquals("发送").assertIsEnabled().performClick()
+        composeRule.runOnIdle {
+            assertEquals(listOf("继续检查" to false), callbacks.sentMessages)
+            state.value = state.value.copy(canResumeTurn = true)
+        }
+        action.assertContentDescriptionEquals("继续任务").assertIsEnabled()
+
+        composeRule.runOnIdle {
+            state.value = state.value.copy(
+                canResumeTurn = false,
+                isTurnRunning = true,
+                activeTurnId = "turn-a",
+            )
+        }
+        action.assertContentDescriptionEquals("暂停任务").assertIsEnabled()
+    }
+
+    @Test
+    fun noticesAreShownAtTheTopOfWorkspaceContent() {
+        show(mutableStateOf(baseState().copy(notice = "任务已暂停")))
+
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("任务已暂停").fetchSemanticsNodes().isNotEmpty()
+        }
+        val host = composeRule.onNodeWithTag("top-snackbar-host").fetchSemanticsNode().boundsInRoot
+        val conversation = composeRule.onNodeWithTag(CONVERSATION_LIST).fetchSemanticsNode().boundsInRoot
+        val topPlacementTolerance = with(composeRule.density) { 40.dp.toPx() }
+
+        assertTrue(
+            "Notice should be anchored near the top of the conversation area",
+            host.top <= conversation.top + topPlacementTolerance,
+        )
+    }
+
+    @Test
+    fun stoppedTurnCanContinueWithNoDraft() {
+        val state = mutableStateOf(
+            baseState().copy(canResumeTurn = true),
+        )
+        val callbacks = WorkspaceCallbacks()
+        show(state, callbacks)
+
+        composeRule.onNodeWithTag(COMPOSER_SEND)
+            .assertContentDescriptionEquals("继续任务")
+            .performClick()
+
+        composeRule.runOnIdle {
+            assertEquals(listOf("请从上次中断的位置继续完成之前的任务。" to false), callbacks.sentMessages)
+        }
+    }
+
+    @Test
+    fun separateWriterSnapshotShowsStatusButDoesNotOfferMutations() {
+        val state = mutableStateOf(
+            baseState(isTurnRunning = true).copy(
+                isExternalWriterSnapshot = true,
+                externalSnapshotUpdatedAt = System.currentTimeMillis(),
+            ),
+        )
+        show(state)
+
+        composeRule.onNodeWithText("此对话由另一处 Codex 窗口打开").assertIsDisplayed()
+        composeRule.onNodeWithText("此页只显示状态", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("另开副本").assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_INPUT).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_SEND).assertDoesNotExist()
     }
 
     @Test
@@ -148,6 +267,7 @@ class WorkspaceDeviceTest {
         composeRule.waitUntil(5_000) {
             composeRule.onAllNodesWithTag("timeline-tool-body-reasoning").fetchSemanticsNodes().isEmpty()
         }
+        composeRule.onNodeWithTag(COMPOSER_SEND).assertContentDescriptionEquals("发送")
 
         scrollTo("timeline-tool-reasoning")
         composeRule.onNodeWithText("private reasoning").assertDoesNotExist()
@@ -432,8 +552,8 @@ val answer = 42
         composeRule.onNodeWithText("已编辑 2 个文件").performClick()
         composeRule.onNodeWithText("app/src/Main.kt").assertExists()
         composeRule.onNodeWithText("app/src/Status.kt").assertExists()
-        composeRule.onNodeWithText("Modified").assertExists()
-        composeRule.onNodeWithText("Added").assertExists()
+        composeRule.onNodeWithText("已修改").assertExists()
+        composeRule.onNodeWithText("新增").assertExists()
         composeRule.onNodeWithText("+2  -1").assertExists()
         composeRule.onAllNodesWithText("Changes").assertCountEquals(0)
         composeRule.onAllNodesWithText("{\"changes\"", substring = true).assertCountEquals(0)
@@ -467,9 +587,13 @@ val answer = 42
                     onDeleteArchivedThread = {},
                     onSetThreadPinned = { _, _ -> },
                     onSend = callbacks.onSend,
-                    onStop = {},
+                    onStop = {
+                        callbacks.stopRequests++
+                        state.value = state.value.copy(isStoppingTurn = true)
+                    },
                     onCompactThread = {},
                     onForkThread = {},
+                    onRefreshExternalThreadSnapshot = {},
                     onStartReview = { _, _ -> },
                     onRunInit = {},
                     onLoadMcpStatus = {},
@@ -574,6 +698,7 @@ private class WorkspaceCallbacks {
     var collaborationMode: String? = null
     var permissionMode: PermissionMode? = null
     val sentMessages = mutableListOf<Pair<String, Boolean>>()
+    var stopRequests: Int = 0
     var olderLoads: Int = 0
     var onLoadOlder: () -> Unit = {}
     var onSetGoal: (String) -> Unit = {}

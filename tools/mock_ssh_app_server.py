@@ -89,6 +89,7 @@ class MockAppServer:
         self.channel = channel
         self.events = events
         self.buffer = b""
+        self.send_lock = threading.Lock()
         self.threads = [
             {
                 "id": "thread-demo-primary",
@@ -112,11 +113,14 @@ class MockAppServer:
         self.turn_counter = 0
         self.pending_approval_turn: tuple[str, str] | None = None
         self.goals: dict[str, dict[str, Any]] = {}
+        self.external_writer_active = True
+        self.external_turn_id = "turn-external-writer"
 
     def send(self, message: dict[str, Any]) -> None:
         self.events.write("server_message", message=message)
-        payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
-        self.channel.sendall(payload.encode("utf-8"))
+        payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        with self.send_lock:
+            self.channel.sendall(encode_websocket_frame(0x1, payload))
 
     def result(self, request: dict[str, Any], result: dict[str, Any]) -> None:
         self.send({"id": request["id"], "result": result})
@@ -126,6 +130,35 @@ class MockAppServer:
 
     def run(self) -> None:
         self.channel.settimeout(1.0)
+        while b"\r\n\r\n" not in self.buffer:
+            try:
+                chunk = self.channel.recv(65536)
+            except socket.timeout:
+                continue
+            if not chunk:
+                return
+            self.buffer += chunk
+        header, self.buffer = self.buffer.split(b"\r\n\r\n", 1)
+        headers = {}
+        for line in header.decode("ascii", errors="replace").split("\r\n")[1:]:
+            name, separator, value = line.partition(":")
+            if separator:
+                headers[name.strip().lower()] = value.strip()
+        key = headers.get("sec-websocket-key")
+        if not key:
+            self.events.write("invalid_websocket_handshake")
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        self.channel.sendall(
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+            ).encode("ascii")
+        )
         while not self.channel.closed:
             try:
                 chunk = self.channel.recv(65536)
@@ -134,17 +167,59 @@ class MockAppServer:
             if not chunk:
                 break
             self.buffer += chunk
-            while b"\n" in self.buffer:
-                raw, self.buffer = self.buffer.split(b"\n", 1)
-                if not raw.strip():
-                    continue
-                try:
-                    message = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                    self.events.write("invalid_client_message", error=str(error))
-                    continue
-                self.events.write("client_message", message=message)
-                self.handle(message)
+            while True:
+                frame = self.read_client_frame()
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode == 0x9:
+                    with self.send_lock:
+                        self.channel.sendall(encode_websocket_frame(0xA, payload))
+                elif opcode == 0x8:
+                    with self.send_lock:
+                        self.channel.sendall(encode_websocket_frame(0x8, payload))
+                    return
+                elif opcode == 0x1:
+                    try:
+                        message = json.loads(payload.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                        self.events.write("invalid_client_message", error=str(error))
+                        continue
+                    self.events.write("client_message", message=message)
+                    self.handle(message)
+
+    def read_client_frame(self) -> tuple[int, bytes] | None:
+        if len(self.buffer) < 2:
+            return None
+        first, second = self.buffer[0], self.buffer[1]
+        if first & 0x70 or not second & 0x80:
+            self.events.write("invalid_client_frame")
+            self.buffer = b""
+            return None
+        length = second & 0x7F
+        offset = 2
+        if length == 126:
+            if len(self.buffer) < offset + 2:
+                return None
+            length = int.from_bytes(self.buffer[offset : offset + 2], "big")
+            offset += 2
+        elif length == 127:
+            if len(self.buffer) < offset + 8:
+                return None
+            length = int.from_bytes(self.buffer[offset : offset + 8], "big")
+            offset += 8
+        if length > 64 * 1024 * 1024:
+            self.events.write("client_frame_too_large", bytes=length)
+            self.buffer = b""
+            return None
+        if len(self.buffer) < offset + 4 + length:
+            return None
+        mask = self.buffer[offset : offset + 4]
+        offset += 4
+        encoded = self.buffer[offset : offset + length]
+        payload = bytes(value ^ mask[index % 4] for index, value in enumerate(encoded))
+        self.buffer = self.buffer[offset + length :]
+        return first & 0x0F, payload
 
     def handle(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -271,6 +346,10 @@ class MockAppServer:
             )
         elif method == "thread/resume":
             thread_id = message["params"]["threadId"]
+            # This mock represents another client connected to the same shared
+            # app-server daemon. A running in-memory thread can be rejoined, so
+            # thread/resume returns its live turn instead of simulating a second
+            # independent app-server writer conflict.
             turns = self.thread_turns(thread_id)
             recent_start = max(0, len(turns) - 5)
             self.result(
@@ -303,7 +382,11 @@ class MockAppServer:
                 },
             )
         elif method == "thread/read":
-            self.result(message, {"thread": self.thread_detail(message["params"]["threadId"])})
+            thread_id = message["params"]["threadId"]
+            self.result(
+                message,
+                {"thread": self.thread_detail(thread_id, include_turns=message.get("params", {}).get("includeTurns", False))},
+            )
         elif method == "thread/goal/get":
             thread_id = message.get("params", {}).get("threadId", "")
             self.result(message, {"goal": self.goals.get(thread_id)})
@@ -317,12 +400,13 @@ class MockAppServer:
                 self.notification("thread/goal/cleared", {"threadId": thread_id})
         elif method == "thread/turns/list":
             params = message.get("params", {})
-            turns = self.thread_turns(params.get("threadId", "thread-demo-primary"))
-            cursor = params.get("cursor", "history-0")
+            thread_id = params.get("threadId", "thread-demo-primary")
+            turns = self.thread_turns(thread_id)
+            cursor = params.get("cursor")
             try:
-                end = int(cursor.rsplit("-", 1)[1])
+                end = len(turns) if cursor is None else int(cursor.rsplit("-", 1)[1])
             except (IndexError, ValueError):
-                end = 0
+                end = len(turns)
             start = max(0, end - 5)
             self.result(
                 message,
@@ -363,8 +447,16 @@ class MockAppServer:
         elif method == "turn/start":
             self.handle_turn(message)
         elif method == "turn/interrupt":
+            if message.get("params", {}).get("threadId") == "thread-demo-primary":
+                self.external_writer_active = False
+            self.notification(
+                "turn/completed",
+                {
+                    "threadId": message.get("params", {}).get("threadId"),
+                    "turn": {"id": message["params"]["turnId"], "status": "interrupted"},
+                },
+            )
             self.result(message, {})
-            self.notification("turn/completed", {"turn": {"id": message["params"]["turnId"], "status": "interrupted"}})
         elif method is None and message.get("id") == 9001 and self.pending_approval_turn is not None:
             self.events.write("approval_response", result=message.get("result", {}))
             turn_id, thread_id = self.pending_approval_turn
@@ -530,19 +622,21 @@ class MockAppServer:
         self.notification("item/completed", {"threadId": thread_id, "item": command})
         self.finish_turn(turn_id, thread_id, "request approval")
 
-    @staticmethod
-    def thread_summary(thread: dict[str, Any]) -> dict[str, Any]:
+    def thread_summary(self, thread: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": thread["id"],
             "name": thread["name"],
             "preview": "Remote thread loaded over SSH",
             "cwd": thread["cwd"],
             "updatedAt": thread["updatedAt"],
-            "status": {"type": "idle"},
+            "status": {
+                "type": "active"
+                if thread["id"] == "thread-demo-primary" and self.external_writer_active
+                else "idle"
+            },
         }
 
-    @staticmethod
-    def thread_turns(thread_id: str) -> list[dict[str, Any]]:
+    def thread_turns(self, thread_id: str) -> list[dict[str, Any]]:
         turns = []
         for index in range(1, 25):
             if index == 24:
@@ -610,18 +704,63 @@ class MockAppServer:
             turns.append(
                 {
                     "id": f"turn-existing-{index}",
+                    "status": "completed",
                     "items": items,
+                }
+            )
+        if thread_id == "thread-demo-primary":
+            turns.append(
+                {
+                    "id": self.external_turn_id,
+                    "status": "inProgress" if self.external_writer_active else "interrupted",
+                    "items": [
+                        {
+                            "type": "userMessage",
+                            "id": "external-user",
+                            "content": [{"type": "text", "text": "检查 NAS 上的测试并报告进度"}],
+                        },
+                        {
+                            "type": "agentMessage",
+                            "id": "external-agent",
+                            "text": "正在执行中…" if self.external_writer_active else "已由 Android 停止。",
+                        },
+                    ],
                 }
             )
         return turns
 
-    @classmethod
-    def thread_detail(cls, thread_id: str) -> dict[str, Any]:
-        return {
+    def thread_detail(self, thread_id: str, include_turns: bool = False) -> dict[str, Any]:
+        thread = {
             "id": thread_id,
             "cwd": "/workspace/demo",
-            "turns": cls.thread_turns(thread_id),
+            "model": "gpt-5.6-sol",
+            "reasoningEffort": "ultra",
+            "serviceTier": "fast",
+            "collaborationMode": {"mode": "default"},
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "user",
+            "activePermissionProfile": {"id": ":workspace"},
+            "status": {
+                "type": "active"
+                if thread_id == "thread-demo-primary" and self.external_writer_active
+                else "idle"
+            },
         }
+        if include_turns:
+            thread["turns"] = self.thread_turns(thread_id)
+        return thread
+
+
+def encode_websocket_frame(opcode: int, payload: bytes) -> bytes:
+    first = 0x80 | opcode
+    length = len(payload)
+    if length < 126:
+        header = bytes((first, length))
+    elif length <= 65535:
+        header = bytes((first, 126)) + length.to_bytes(2, "big")
+    else:
+        header = bytes((first, 127)) + length.to_bytes(8, "big")
+    return header + payload
 
 
 def host_fingerprint(key: paramiko.PKey) -> str:
@@ -674,7 +813,14 @@ def handle_client(
                 channel.send_exit_status(0)
                 channel.close()
                 continue
-            if "codex app-server --listen stdio://" in command:
+            if "codex app-server daemon version" in command:
+                channel.sendall(
+                    b'{"status":"running","socketPath":"/tmp/codex-remote-mock.sock"}\n'
+                )
+                channel.send_exit_status(0)
+                channel.close()
+                continue
+            if "codex app-server proxy --sock" in command:
                 MockAppServer(channel, events).run()
                 continue
             channel.send_stderr(b"codex command not found\n")

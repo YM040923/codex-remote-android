@@ -21,15 +21,25 @@ class SshConfigTest {
             "exec \"\${SHELL:-/bin/sh}\" -lc 'codex --version'",
             codexVersionCommand(RemotePlatform.POSIX),
         )
-        assertTrue(appServerCommand(RemotePlatform.POSIX).contains("-lc 'exec codex app-server"))
+        assertEquals(
+            "exec \"\${SHELL:-/bin/sh}\" -lc 'exec codex app-server daemon version'",
+            appServerDaemonVersionCommand(RemotePlatform.POSIX),
+        )
+        val proxy = appServerProxyCommand(RemotePlatform.POSIX, "/run/codex/app-server.sock")
+        assertTrue(proxy.contains("codex app-server proxy --sock"))
+        assertTrue(proxy.contains("/run/codex/app-server.sock"))
+        assertTrue(proxy.contains("-lc '"))
     }
 
     @Test
-    fun windowsCommandAllowsTheRemotePowerShellProfile() {
-        val command = appServerCommand(RemotePlatform.WINDOWS)
+    fun windowsCommandsUseTheDaemonAndQuoteSocketPaths() {
+        val versionCommand = appServerDaemonVersionCommand(RemotePlatform.WINDOWS)
+        val proxyCommand = appServerProxyCommand(RemotePlatform.WINDOWS, "C:\\Users\\Test O'Neil\\codex.sock")
 
-        assertTrue(command.contains("powershell.exe"))
-        assertFalse(command.contains("-NoProfile"))
-        assertTrue(command.contains("codex app-server --listen stdio://"))
+        assertTrue(versionCommand.contains("powershell.exe"))
+        assertTrue(versionCommand.contains("codex app-server daemon version"))
+        assertFalse(versionCommand.contains("--listen stdio://"))
+        assertTrue(proxyCommand.contains("codex app-server proxy --sock"))
+        assertTrue(proxyCommand.contains("'C:\\Users\\Test O''Neil\\codex.sock'"))
     }
 }

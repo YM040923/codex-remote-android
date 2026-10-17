@@ -51,8 +51,15 @@ class ComposerBehaviorTest {
     }
 
     @Test
+    fun builtInCommandDescriptionsAreSimplifiedChinese() {
+        val commands = desktopSlashCommands(hasThread = true)
+        assertEquals("选择此任务使用的模型", commands.first { it.name == "model" }.description)
+        assertEquals("归档当前任务", commands.first { it.name == "archive" }.description)
+    }
+
+    @Test
     fun combinedModelSummaryOnlyShowsFastWhenEnabled() {
         assertEquals("5.6-sol · 极高", modelSettingsSummary("gpt-5.6-sol", "ultra", null))
-        assertEquals("5.6-sol · 极高 · Fast", modelSettingsSummary("gpt-5.6-sol", "ultra", "Fast"))
+        assertEquals("5.6-sol · 极高 · 快速", modelSettingsSummary("gpt-5.6-sol", "ultra", "Fast"))
     }
 }

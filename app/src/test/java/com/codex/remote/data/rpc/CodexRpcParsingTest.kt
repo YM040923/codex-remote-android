@@ -2,16 +2,36 @@ package com.codex.remote.data.rpc
 
 import com.codex.remote.domain.TimelineKind
 import com.codex.remote.domain.ThreadGoalStatus
+import com.codex.remote.domain.isResumableTurnStatus
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CodexRpcParsingTest {
     private val json = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun detectsLatestTurnStatusForNewAndLegacyHistoryOrdering() {
+        val newestFirst = json.parseToJsonElement(
+            """[{"id":"turn-new","status":"interrupted"},{"id":"turn-old","status":"completed"}]""",
+        ).jsonArray
+        val oldestFirst = json.parseToJsonElement(
+            """[{"id":"turn-old","status":"completed"},{"id":"turn-new","status":"failed"}]""",
+        ).jsonArray
+
+        assertEquals("interrupted", CodexRpcClient.latestTurnStatusFromTurns(newestFirst, newestFirst = true))
+        assertEquals("failed", CodexRpcClient.latestTurnStatusFromTurns(oldestFirst, newestFirst = false))
+        assertTrue("interrupted".isResumableTurnStatus())
+        assertTrue("failed".isResumableTurnStatus())
+        assertFalse("completed".isResumableTurnStatus())
+        assertFalse("inProgress".isResumableTurnStatus())
+    }
 
     @Test
     fun parsesAgentMessage() {
@@ -75,6 +95,35 @@ class CodexRpcParsingTest {
 
         assertEquals("idle", thread?.status)
         assertEquals("/srv/app", thread?.cwd)
+    }
+
+    @Test
+    fun parsesActiveThreadStatusFromObjectAndPrimitiveForms() {
+        assertEquals(
+            "active",
+            CodexRpcClient.parseThreadStatus(
+                json.parseToJsonElement("""{"status":{"type":"active","activeFlags":[]}}""").jsonObject,
+            ),
+        )
+        assertEquals(
+            "idle",
+            CodexRpcClient.parseThreadStatus(
+                json.parseToJsonElement("""{"status":"idle"}""").jsonObject,
+            ),
+        )
+    }
+
+    @Test
+    fun readOnlySnapshotInfersActiveFromLatestPersistedTurn() {
+        val thread = json.parseToJsonElement("""{"status":{"type":"notLoaded"}}""").jsonObject
+        val turns = json.parseToJsonElement(
+            """[{"id":"turn-new","status":"inProgress","items":[]},{"id":"turn-old","status":"completed","items":[]}]""",
+        ).jsonArray
+
+        assertEquals("active", CodexRpcClient.readOnlySnapshotStatus(thread, turns, newestFirst = true))
+        assertEquals("notLoaded", CodexRpcClient.readOnlySnapshotStatus(thread, turns, newestFirst = false))
+        assertEquals("turn-new", CodexRpcClient.activeTurnId(turns, newestFirst = true))
+        assertEquals("turn-new", CodexRpcClient.activeTurnId(turns, newestFirst = false))
     }
 
     @Test

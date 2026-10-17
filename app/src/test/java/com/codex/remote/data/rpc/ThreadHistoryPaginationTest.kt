@@ -58,6 +58,25 @@ class ThreadHistoryPaginationTest {
     }
 
     @Test
+    fun readOnlySnapshotUsesThreadReadAndLatestTurnsWithoutAcquiringWriterLease() {
+        val read = CodexRpcClient.threadReadParams("thread-1", includeTurns = false)
+        val latest = CodexRpcClient.threadLatestTurnsParams("thread-1")
+
+        assertEquals("thread-1", read.getValue("threadId").jsonPrimitive.content)
+        assertFalse(read.getValue("includeTurns").jsonPrimitive.content.toBoolean())
+        assertEquals("thread-1", latest.getValue("threadId").jsonPrimitive.content)
+        assertFalse(latest.containsKey("cursor"))
+        assertEquals("desc", latest.getValue("sortDirection").jsonPrimitive.content)
+        assertEquals("full", latest.getValue("itemsView").jsonPrimitive.content)
+    }
+
+    @Test
+    fun onlyActiveWriterConflictTriggersReadOnlyFallback() {
+        assertTrue(RpcException("thread thread-1 already has an active writer (code -32600)").isActiveWriterConflict())
+        assertFalse(RpcException("thread not found").isActiveWriterConflict())
+    }
+
+    @Test
     fun descendingWireTurnsBecomeChronologicalTimelineItems() {
         val turns = json.parseToJsonElement(
             """[

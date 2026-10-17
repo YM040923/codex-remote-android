@@ -1,8 +1,10 @@
 package com.codex.remote.ui.theme
 
 import android.app.Activity
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Typography
@@ -14,16 +16,33 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
-val CodexGreen = Color(0xFF0E7A53)
-val CodexRed = Color(0xFFB93A32)
-val DiffGreen = Color(0xFFE5F4EA)
-val DiffRed = Color(0xFFFBE8E7)
-val Ink = Color(0xFF171716)
-val WarmBackground = Color(0xFFF7F7F5)
-val Panel = Color(0xFFF0F0ED)
-val Stroke = Color(0xFFD9D9D4)
+// A quiet, low-contrast palette inspired by Codex workspace surfaces.
+// Most emphasis comes from hierarchy and spacing; color remains semantic.
+val CodexGreen = Color(0xFF52745F)
+val CodexRed = Color(0xFFB44B40)
+private val Ink = Color(0xFF1D1C1A)
+private val WarmBackground = Color(0xFFF7F7F5)
+private val Panel = Color(0xFFF0F0EE)
+private val Stroke = Color(0xFFDEDDD9)
+
+object CodexSpacing {
+    val xSmall = 4.dp
+    val small = 8.dp
+    val medium = 12.dp
+    val large = 16.dp
+    val xLarge = 24.dp
+}
+
+private val CodexShapes = Shapes(
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(7.dp),
+    medium = RoundedCornerShape(11.dp),
+    large = RoundedCornerShape(15.dp),
+    extraLarge = RoundedCornerShape(20.dp),
+)
 
 private val LightColors = lightColorScheme(
     primary = Ink,
@@ -33,6 +52,11 @@ private val LightColors = lightColorScheme(
     secondary = CodexGreen,
     onSecondary = Color.White,
     error = CodexRed,
+    errorContainer = Color(0xFFF6E8E5),
+    onErrorContainer = Color(0xFF5A211B),
+    tertiary = CodexGreen,
+    tertiaryContainer = Color(0xFFEAF1EB),
+    onTertiaryContainer = Color(0xFF203A2B),
     background = WarmBackground,
     onBackground = Ink,
     surface = Color(0xFFFCFCFA),
@@ -40,23 +64,30 @@ private val LightColors = lightColorScheme(
     surfaceVariant = Panel,
     onSurfaceVariant = Color(0xFF565650),
     outline = Stroke,
+    outlineVariant = Color(0xFFE8E7E3),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFF1F1ED),
-    onPrimary = Color(0xFF181817),
-    primaryContainer = Color(0xFF353532),
-    onPrimaryContainer = Color(0xFFF1F1ED),
-    secondary = Color(0xFF67C99B),
-    onSecondary = Color(0xFF072A1C),
-    error = Color(0xFFFFB4AC),
-    background = Color(0xFF181817),
-    onBackground = Color(0xFFF0F0EC),
-    surface = Color(0xFF20201E),
-    onSurface = Color(0xFFF0F0EC),
-    surfaceVariant = Color(0xFF2A2A27),
-    onSurfaceVariant = Color(0xFFB9B9B1),
-    outline = Color(0xFF464641),
+    primary = Color(0xFFECEBE7),
+    onPrimary = Color(0xFF1A1918),
+    primaryContainer = Color(0xFF343331),
+    onPrimaryContainer = Color(0xFFECEBE7),
+    secondary = Color(0xFF89AE94),
+    onSecondary = Color(0xFF14281B),
+    error = Color(0xFFE89A91),
+    errorContainer = Color(0xFF3A2421),
+    onErrorContainer = Color(0xFFFFDAD4),
+    tertiary = Color(0xFF89AE94),
+    tertiaryContainer = Color(0xFF223429),
+    onTertiaryContainer = Color(0xFFD2E8D6),
+    background = Color(0xFF151515),
+    onBackground = Color(0xFFECEBE7),
+    surface = Color(0xFF1B1B1A),
+    onSurface = Color(0xFFECEBE7),
+    surfaceVariant = Color(0xFF232322),
+    onSurfaceVariant = Color(0xFFA8A6A1),
+    outline = Color(0xFF3D3C39),
+    outlineVariant = Color(0xFF2D2C2A),
 )
 
 private val CodexTypography = Typography(
@@ -94,5 +125,5 @@ fun CodexRemoteTheme(
             }
         }
     }
-    MaterialTheme(colorScheme = colors, typography = CodexTypography, content = content)
+    MaterialTheme(colorScheme = colors, typography = CodexTypography, shapes = CodexShapes, content = content)
 }

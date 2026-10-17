@@ -5,6 +5,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val appVersionName = "0.1.5"
+
 val releaseKeystorePath = providers.environmentVariable("CODEX_REMOTE_KEYSTORE_PATH").orNull
 val releaseKeystorePassword = providers.environmentVariable("CODEX_REMOTE_KEYSTORE_PASSWORD").orNull
 val releaseKeyAlias = providers.environmentVariable("CODEX_REMOTE_KEY_ALIAS").orNull
@@ -29,8 +31,8 @@ android {
         applicationId = "com.codex.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 6
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -118,4 +120,30 @@ dependencies {
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+}
+
+val namedApkDirectory = layout.buildDirectory.dir("outputs/named-apk")
+
+tasks.register<Copy>("copyNamedDebugApk") {
+    from(layout.buildDirectory.file("outputs/apk/debug/app-debug.apk"))
+    into(namedApkDirectory)
+    rename { "Codex-Remote-v$appVersionName-debug.apk" }
+}
+
+tasks.register<Copy>("copyNamedReleaseApk") {
+    from(layout.buildDirectory.dir("outputs/apk/release")) {
+        include("app-release*.apk")
+    }
+    into(namedApkDirectory)
+    rename { sourceName ->
+        val signingLabel = if (sourceName.contains("unsigned", ignoreCase = true)) "-unsigned" else ""
+        "Codex-Remote-v$appVersionName-release$signingLabel.apk"
+    }
+}
+
+tasks.configureEach {
+    when (name) {
+        "assembleDebug" -> finalizedBy("copyNamedDebugApk")
+        "assembleRelease" -> finalizedBy("copyNamedReleaseApk")
+    }
 }

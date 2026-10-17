@@ -47,7 +47,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -77,6 +76,7 @@ sealed interface AppServerEvent {
         val threadId: String?,
         val running: Boolean,
         val turnId: String? = null,
+        val turnStatus: String? = null,
     ) : AppServerEvent
     data class Approval(val threadId: String?, val request: ApprovalRequest) : AppServerEvent
     data object AccountChanged : AppServerEvent
@@ -328,6 +328,8 @@ class CodexRpcClient(
                 approvalPolicy = result.string("approvalPolicy") ?: approvalPolicy,
                 approvalsReviewer = result.string("approvalsReviewer") ?: approvalsReviewer,
                 permissionProfile = result.obj("activePermissionProfile")?.string("id") ?: permissionProfile,
+                latestTurnStatus = threadObject?.array("turns")
+                    ?.let { latestTurnStatusFromTurns(it, newestFirst = false) },
             ),
         )
     }
@@ -430,6 +432,56 @@ class CodexRpcClient(
         resumeThreadLegacy(threadId, cwd)
     }
 
+    /**
+     * Reads a snapshot without acquiring the thread's exclusive writer lease.
+     * This is a view, not an attachment: callers must not route turns or stop
+     * requests through this client when another app-server owns the writer.
+     */
+    suspend fun readThreadForViewing(threadId: String, fallbackCwd: String): RemoteThreadSession {
+        val thread = request("thread/read", threadReadParams(threadId, includeTurns = false)).obj("thread")
+            ?: throw RpcException("thread/read 未返回 thread")
+
+        val page = try {
+            request("thread/turns/list", threadLatestTurnsParams(threadId))
+        } catch (error: RpcException) {
+            if (!error.isHistoryPaginationUnavailable()) throw error
+            val legacyThread = request("thread/read", threadReadParams(threadId, includeTurns = true))
+                .obj("thread") ?: thread
+            val turns = legacyThread.array("turns")
+            return RemoteThreadSession(
+                timeline = parseTurnsTimeline(turns, descending = false),
+                model = legacyThread.string("model"),
+                reasoningEffort = legacyThread.string("reasoningEffort"),
+                serviceTier = legacyThread.string("serviceTier"),
+                cwd = legacyThread.string("cwd") ?: fallbackCwd,
+                collaborationMode = legacyThread.obj("collaborationMode")?.string("mode"),
+                approvalPolicy = legacyThread.string("approvalPolicy"),
+                approvalsReviewer = legacyThread.string("approvalsReviewer"),
+                permissionProfile = legacyThread.obj("activePermissionProfile")?.string("id"),
+                threadStatus = readOnlySnapshotStatus(legacyThread, turns, newestFirst = false),
+                activeTurnId = activeTurnId(turns, newestFirst = false),
+                latestTurnStatus = latestTurnStatusFromTurns(turns, newestFirst = false),
+            )
+        }
+
+        val turns = page.array("data")
+        return RemoteThreadSession(
+            timeline = parseTurnsTimeline(turns),
+            model = thread.string("model"),
+            reasoningEffort = thread.string("reasoningEffort"),
+            serviceTier = thread.string("serviceTier"),
+            cwd = thread.string("cwd") ?: fallbackCwd,
+            olderHistoryCursor = page.string("nextCursor")?.takeIf(String::isNotBlank),
+            collaborationMode = thread.obj("collaborationMode")?.string("mode"),
+            approvalPolicy = thread.string("approvalPolicy"),
+            approvalsReviewer = thread.string("approvalsReviewer"),
+            permissionProfile = thread.obj("activePermissionProfile")?.string("id"),
+            threadStatus = readOnlySnapshotStatus(thread, turns, newestFirst = true),
+            activeTurnId = activeTurnId(turns, newestFirst = true),
+            latestTurnStatus = latestTurnStatusFromTurns(turns, newestFirst = true),
+        )
+    }
+
     private suspend fun resumeThreadPaginated(threadId: String, cwd: String): RemoteThreadSession {
         val result = request("thread/resume", threadResumeParams(threadId, cwd, paginated = true))
         val thread = result.obj("thread")
@@ -440,6 +492,8 @@ class CodexRpcClient(
                 thread = thread,
                 fallbackCwd = cwd,
                 timeline = parseTurnsTimeline(initialPage.array("data")),
+                activeTurnId = activeTurnId(initialPage.array("data"), newestFirst = true),
+                lastTurnStatus = latestTurnStatusFromTurns(initialPage.array("data"), newestFirst = true),
                 olderHistoryCursor = selectOlderHistoryCursor(
                     initialPageCursor = initialPage.string("nextCursor"),
                     turnsBackwardsCursor = result.string("turnsBackwardsCursor"),
@@ -483,6 +537,9 @@ class CodexRpcClient(
         fallbackCwd: String,
         timeline: List<TimelineItem>,
         olderHistoryCursor: String? = null,
+        activeTurnId: String? = thread?.array("turns")?.let { activeTurnId(it, newestFirst = false) },
+        lastTurnStatus: String? = thread?.array("turns")
+            ?.let { latestTurnStatusFromTurns(it, newestFirst = false) },
     ) = RemoteThreadSession(
         timeline = timeline,
         model = result.string("model"),
@@ -494,6 +551,8 @@ class CodexRpcClient(
         approvalPolicy = result.string("approvalPolicy"),
         approvalsReviewer = result.string("approvalsReviewer"),
         permissionProfile = result.obj("activePermissionProfile")?.string("id"),
+        activeTurnId = activeTurnId,
+        latestTurnStatus = lastTurnStatus,
     )
 
     suspend fun loadOlderThreadHistory(threadId: String, cursor: String): RemoteThreadHistoryPage {
@@ -520,8 +579,8 @@ class CodexRpcClient(
         collaborationMode: RemoteCollaborationMode?,
         mentions: List<ComposerMention> = emptyList(),
         attachments: List<ComposerImageAttachment> = emptyList(),
-    ) {
-        request(
+    ): String? {
+        val result = request(
             "turn/start",
             turnStartParams(
                 threadId,
@@ -538,6 +597,7 @@ class CodexRpcClient(
                 attachments,
             ),
         )
+        return result.obj("turn")?.string("id")
     }
 
     suspend fun steerTurn(
@@ -618,21 +678,17 @@ class CodexRpcClient(
     })
 
     private suspend fun send(message: JsonObject) = writeMutex.withLock {
-        withContext(Dispatchers.IO) {
-            transport.writer.write(json.encodeToString(JsonObject.serializer(), message))
-            transport.writer.newLine()
-            transport.writer.flush()
-        }
+        transport.writeMessage(json.encodeToString(JsonObject.serializer(), message))
     }
 
     private suspend fun readLoop() {
         try {
             while (true) {
-                val line = transport.reader.readLine() ?: break
-                if (line.isBlank()) continue
-                val message = runCatching { json.parseToJsonElement(line).jsonObject }.getOrNull()
+                val payload = transport.readMessage()
+                if (payload.isBlank()) continue
+                val message = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
                 if (message == null) {
-                    _events.emit(AppServerEvent.Diagnostic("无法解析 app-server 输出：$line"))
+                    _events.emit(AppServerEvent.Diagnostic("无法解析 app-server 输出：$payload"))
                     continue
                 }
                 val id = message["id"]?.jsonPrimitive?.contentOrNull
@@ -718,6 +774,7 @@ class CodexRpcClient(
                     threadId = params.string("threadId"),
                     running = true,
                     turnId = params.obj("turn")?.string("id"),
+                    turnStatus = params.obj("turn")?.string("status"),
                 ),
             )
             "turn/completed" -> {
@@ -725,7 +782,14 @@ class CodexRpcClient(
                 val turnError = turn?.obj("error")?.string("message")
                 val threadId = params.string("threadId")
                 if (!turnError.isNullOrBlank()) _events.emit(AppServerEvent.Failure(turnError, threadId))
-                _events.emit(AppServerEvent.TurnRunning(threadId, false, turn?.string("id")))
+                _events.emit(
+                    AppServerEvent.TurnRunning(
+                        threadId = threadId,
+                        running = false,
+                        turnId = turn?.string("id"),
+                        turnStatus = turn?.string("status"),
+                    ),
+                )
             }
             "account/updated" -> _events.emit(AppServerEvent.AccountChanged)
             "thread/started", "thread/status/changed", "thread/archived", "thread/deleted", "thread/closed",
@@ -886,6 +950,18 @@ class CodexRpcClient(
         internal fun threadTurnsListParams(threadId: String, cursor: String): JsonObject = buildJsonObject {
             put("threadId", threadId)
             put("cursor", cursor)
+            put("limit", THREAD_HISTORY_PAGE_SIZE)
+            put("sortDirection", "desc")
+            put("itemsView", "full")
+        }
+
+        internal fun threadReadParams(threadId: String, includeTurns: Boolean): JsonObject = buildJsonObject {
+            put("threadId", threadId)
+            put("includeTurns", includeTurns)
+        }
+
+        internal fun threadLatestTurnsParams(threadId: String): JsonObject = buildJsonObject {
+            put("threadId", threadId)
             put("limit", THREAD_HISTORY_PAGE_SIZE)
             put("sortDirection", "desc")
             put("itemsView", "full")
@@ -1406,12 +1482,49 @@ class CodexRpcClient(
             cwd = item.string("cwd").orEmpty(),
             updatedAt = item["updatedAt"]?.jsonPrimitive?.longOrNull ?: 0,
             isPinned = item.boolean("isPinned"),
-            status = when (val status = item["status"]) {
-                is JsonPrimitive -> status.contentOrNull.orEmpty()
-                is JsonObject -> status.string("type") ?: status.keys.firstOrNull().orEmpty()
-                else -> ""
-            },
+            status = parseThreadStatus(item).orEmpty(),
         )
+        }
+
+        internal fun parseThreadStatus(thread: JsonObject): String? = when (val status = thread["status"]) {
+            is JsonPrimitive -> status.contentOrNull
+            is JsonObject -> status.string("type") ?: status.keys.firstOrNull()
+            else -> null
+        }
+
+        internal fun readOnlySnapshotStatus(
+            thread: JsonObject,
+            turns: JsonArray,
+            newestFirst: Boolean,
+        ): String? {
+            val latestTurn = if (newestFirst) turns.firstOrNull() else turns.lastOrNull()
+            val latestTurnStatus = latestTurn?.asObject()?.string("status")
+            // A server that did not load the writer's thread can report `notLoaded` even
+            // while the persisted latest turn is still in progress. Prefer that stronger
+            // signal for the read-only snapshot, while retaining the server status otherwise.
+            return if (latestTurnStatus.equals("inProgress", ignoreCase = true)) {
+                "active"
+            } else {
+                parseThreadStatus(thread)
+            }
+        }
+
+        internal fun activeTurnId(turns: JsonArray, newestFirst: Boolean): String? {
+            val orderedTurns = if (newestFirst) turns else turns.asReversed()
+            return orderedTurns.firstNotNullOfOrNull { element ->
+                val turn = element.asObject() ?: return@firstNotNullOfOrNull null
+                val status = turn["status"]?.jsonPrimitive?.contentOrNull
+                if (status.equals("inProgress", ignoreCase = true) || status.equals("running", ignoreCase = true)) {
+                    turn.string("id")
+                } else {
+                    null
+                }
+            }
+        }
+
+        internal fun latestTurnStatusFromTurns(turns: JsonArray, newestFirst: Boolean): String? {
+            val latestTurn = if (newestFirst) turns.firstOrNull() else turns.lastOrNull()
+            return latestTurn?.asObject()?.string("status")
         }
     }
 
@@ -1492,6 +1605,9 @@ private fun RpcException.isHistoryPaginationUnavailable(): Boolean {
             message.contains("not supported", ignoreCase = true)
     }
 }
+
+internal fun Throwable.isActiveWriterConflict(): Boolean =
+    message.orEmpty().contains("already has an active writer", ignoreCase = true)
 
 private fun JsonElement.asObject(): JsonObject? = this as? JsonObject
 private fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject

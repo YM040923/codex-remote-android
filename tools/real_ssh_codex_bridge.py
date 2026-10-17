@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Expose the installed Codex app-server through a local SSH test endpoint.
+"""Expose the installed shared Codex app-server daemon through SSH for QA.
 
 This is an integration harness, not an app-server double. Every JSONL byte is
-forwarded to the real Codex CLI process so Android exercises the production
-protocol, account, model catalog, history, and agent runtime.
+carried in WebSocket frames and forwarded by `codex app-server proxy` to the
+already-running daemon. Android exercises the production protocol, account,
+model catalog, history, and agent runtime without starting another server.
 """
 
 from __future__ import annotations
@@ -110,7 +111,22 @@ def handle_probe(
         channel.close()
         return True
     if "codex --version" not in command:
-        return False
+        if "codex app-server daemon version" not in command:
+            return False
+        completed = subprocess.run(
+            resolve_codex_process(node, codex_js, "app-server", "daemon", "version"),
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        if completed.stdout:
+            channel.sendall(completed.stdout)
+        if completed.stderr:
+            channel.send_stderr(completed.stderr)
+        channel.send_exit_status(completed.returncode)
+        channel.close()
+        events.write("app_server_daemon_probe", exit_status=completed.returncode)
+        return True
 
     completed = subprocess.run(
         resolve_codex_process(node, codex_js, "--version"),
@@ -166,16 +182,17 @@ def bridge_app_server(
     channel: paramiko.Channel,
     node: Path,
     codex_js: Path,
+    socket_path: str,
     events: EventLog,
 ) -> None:
     process = subprocess.Popen(
-        resolve_codex_process(node, codex_js, "app-server", "--listen", "stdio://"),
+        resolve_codex_process(node, codex_js, "app-server", "proxy", "--sock", socket_path),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=0,
     )
-    events.write("app_server_started", pid=process.pid)
+    events.write("app_server_proxy_started", pid=process.pid, socket_path=socket_path)
     channel.settimeout(1.0)
     workers = [threading.Thread(target=pump_channel_to_process, args=(channel, process), daemon=True)]
     if process.stdout is not None:
@@ -199,7 +216,7 @@ def bridge_app_server(
         except (EOFError, OSError, socket.error):
             pass
         channel.close()
-        events.write("app_server_stopped", pid=process.pid, exit_status=process.returncode)
+        events.write("app_server_proxy_stopped", pid=process.pid, exit_status=process.returncode)
 
 
 def handle_channel(
@@ -220,8 +237,28 @@ def handle_channel(
     time.sleep(0.05)
     if handle_probe(channel, command, node, codex_js, events):
         return
-    if "codex app-server --listen stdio://" in command:
-        bridge_app_server(channel, node, codex_js, events)
+    if "codex app-server proxy --sock" in command:
+        probe = subprocess.run(
+            resolve_codex_process(node, codex_js, "app-server", "daemon", "version"),
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        if probe.returncode != 0:
+            channel.send_stderr(probe.stderr or b"Codex app-server daemon status probe failed\n")
+            channel.send_exit_status(probe.returncode)
+            channel.close()
+            return
+        try:
+            daemon = json.loads(probe.stdout.decode("utf-8"))
+            if daemon.get("status") != "running" or not daemon.get("socketPath"):
+                raise ValueError(f"shared app-server daemon is not running: {daemon}")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            channel.send_stderr(f"Cannot connect to shared Codex app-server: {error}\n".encode("utf-8"))
+            channel.send_exit_status(1)
+            channel.close()
+            return
+        bridge_app_server(channel, node, codex_js, str(daemon["socketPath"]), events)
         return
     channel.send_stderr(b"Unsupported integration command\n")
     channel.send_exit_status(127)

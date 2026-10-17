@@ -6,8 +6,8 @@
 An Android client for Codex hosts reached over SSH. A saved connection represents
 one host; after connecting, the app imports every resumable remote Codex
 conversation and groups projects from each thread's working directory. The app
-does not run a local agent: it starts `codex app-server` remotely and speaks its
-JSONL protocol over SSH.
+does not run a local agent or create a second app-server: it connects through
+`codex app-server proxy` to the host's shared app-server daemon.
 
 Implementation notes and the audited Codex source boundary are documented in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -18,15 +18,29 @@ The current Desktop parity matrix and known gaps are tracked in
 
 - OpenSSH access with a password or PEM/OpenSSH private key.
 - `codex` installed and available from the remote login shell (`codex --version`).
+- The Codex app-server daemon running for the same remote user. Android reports a
+  clear setup error if the shared daemon is unavailable; it never starts a second
+  app-server that would conflict with conversations already open elsewhere.
 - A Codex account on the remote host. Existing API-key/ChatGPT auth is reused;
   when required, the app can start Codex's remote ChatGPT device-code login.
 - A trusted, least-privilege remote user.
 
+For live control of a conversation already open in Codex Desktop, both clients
+must connect to the same daemon under the same remote user and `CODEX_HOME`.
+
 No project path is configured on Android. Existing projects and conversations
 come from the remote Codex history returned by `thread/list`.
-Opening a conversation resumes its live app-server subscription while loading
-only the latest five full turns; older turns are fetched as the chat is scrolled
-to the top, with a legacy full-history fallback for older Codex hosts.
+Opening a conversation resumes its app-server subscription while loading only
+the latest five full turns; older turns are fetched as the chat is scrolled to
+the top. When Desktop and Android connect to the same shared daemon, Android
+rejoins the existing live turn, can stop it, and can then send a new message in
+that same conversation. If `thread/resume` reports that a different
+app-server process owns the writer lease, Android instead shows a read-only
+history/status snapshot refreshed every five seconds; it does not offer stop or
+send controls that the connected server cannot safely route to that process.
+Connect both clients to the same daemon to control the original task. Android
+never kills a CLI process or removes lock files. Forking from a read-only
+snapshot remains available when a separate conversation is preferred.
 
 The model and reasoning pickers are also remote data. They are loaded from
 `model/list`, so the choices follow the Codex version and account configured on
@@ -49,7 +63,10 @@ endorsed by OpenAI. Codex and OpenAI are trademarks of their respective owner.
 ## Build
 
 Open this directory in Android Studio, or run `./gradlew assembleDebug` with
-JDK 17 and Android SDK 35 installed.
+JDK 17 and Android SDK 35 installed. The app version is shown in Android as
+configured in the app build; each build also copies a clearly named APK into
+`app/build/outputs/named-apk/`, such as
+`Codex-Remote-v<version>-debug.apk`. The original Gradle APK output is retained.
 
 Run the device-side regression suite on a connected emulator or Android device:
 
@@ -73,6 +90,9 @@ CODEX_REMOTE_KEY_PASSWORD
 
 Signing material must remain outside the repository. APKs, keystores, local SDK
 configuration, build caches, and QA captures are excluded by `.gitignore`.
+Without release signing configured, the named release artifact is explicitly
+marked `-release-unsigned.apk` so it cannot be mistaken for a signed installable
+release.
 
 ## License
 

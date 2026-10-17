@@ -11,8 +11,8 @@ Audit baseline:
 | Area | Android support |
 | --- | --- |
 | Host discovery | Imports every active remote thread with cursor pagination and no project filter; groups projects by thread `cwd`. |
-| Thread lifecycle | Start, paginated resume, rename, pin, archive, browse archived tasks, unarchive, permanently delete, fork, and compact. |
-| Turns | Load the latest five full turns first, fetch older pages at the top with `thread/turns/list`, preserve scroll position, start, stream, steer, interrupt, and render every current `ThreadItem` variant. |
+| Thread lifecycle | Start, paginated resume, rename, pin, archive, browse archived tasks, unarchive, permanently delete, fork, and compact. If another independent app-server holds the writer lease, show and refresh a read-only history/status snapshot without retrying resume. |
+| Turns | Load the latest five full turns first, fetch older pages at the top with `thread/turns/list`, preserve scroll position, start, stream, steer, and interrupt. When attached to the same shared daemon as another Codex window, rejoin its live turn, stop it, and send a new turn in that same conversation. |
 | Composer | Desktop-style plus menu, remote file/folder references, Android image input, Goal/Plan actions, remote skill/plugin `$` mentions, slash commands, model, reasoning, service tier, collaboration mode, and permissions. |
 | Commands | `/compact`, `/feedback`, `/fork`, `/goal`, `/init`, `/mcp`, `/model`, `/new`, `/plan`, `/reasoning`, `/review-mode`, and `/status`, plus task-management shortcuts. |
 | Goals | Desktop-style removable Goal marker for the next composer submission, plus read, create, edit, pause, resume, clear, and continue persisted remote goals. |
@@ -30,6 +30,7 @@ Audit baseline:
 - Rich Git review: automatic base-branch discovery, per-file navigation, syntax-highlighted diffs, inline comments, commit/revert actions, and detached review delivery.
 - Edit or undo a historical turn. The protocol's `thread/rollback` is deprecated and does not restore repository changes; a correct implementation must restore both conversation history and affected files.
 - Background terminal sessions and interactive terminal input. Command events render, but Android has no terminal panel for long-running PTY sessions.
+- Control a writer in an entirely separate app-server process. The fallback view is intentionally read-only; stop/continue works when Android and the other Codex window connect to the same shared app-server daemon. Unrelated server processes are not controlled by killing processes or editing lock files.
 - MCP extended-form elicitation, MCP App HTML surfaces, resource browsing, and direct MCP tool invocation.
 - Plugin management: marketplace browsing, install/uninstall/update, authentication policy, plugin details, and sharing. Android currently loads installed plugins for `$` mentions only. The public protocol marks several plugin management methods as under development.
 
@@ -51,6 +52,8 @@ Audit baseline:
 - OpenSSH config expansion, ProxyJump, SSH agent or hardware-key authentication, and managed relay pairing.
 - Remote file open-in-editor actions, deep links, desktop notifications, and Android share-sheet integration.
 
-These gaps should not be represented as working until their app-server request,
-notification handling, UI state, error state, and non-destructive verification
-are all implemented.
+When an independent app-server owns a thread, its status/history snapshot
+refreshes every five seconds; detailed item deltas may be less immediate than
+on a thread resumed directly by Android. The snapshot view does not expose
+stop/send controls because those requests cannot be routed to the independent
+writer process.
