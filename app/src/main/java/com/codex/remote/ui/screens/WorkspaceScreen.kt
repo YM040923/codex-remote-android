@@ -151,11 +151,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.codex.remote.domain.AppUiState
 import com.codex.remote.domain.ApprovalKind
 import com.codex.remote.domain.ConnectionStatus
+import com.codex.remote.domain.MAX_COMPOSER_ATTACHMENT_BASE64_CHARS
+import com.codex.remote.domain.MAX_COMPOSER_IMAGE_BYTES
+import com.codex.remote.domain.MAX_COMPOSER_IMAGES
 import com.codex.remote.domain.ComposerMention
 import com.codex.remote.domain.ComposerMentionKind
 import com.codex.remote.domain.ComposerImageAttachment
@@ -235,6 +240,7 @@ fun WorkspaceScreen(
     onTrustHostKey: () -> Unit,
     onRejectHostKey: () -> Unit,
     onDismissNotice: () -> Unit,
+    onUrlOpenError: (String) -> Unit,
 ) {
     val drawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -390,9 +396,10 @@ fun WorkspaceScreen(
         }
     }
 
-    state.pendingApproval?.let { approval ->
+    state.pendingApprovals.firstOrNull()?.let { approval ->
         ApprovalDialog(
             approval = approval,
+            remaining = state.pendingApprovals.size - 1,
             onDecision = onApproval,
         )
     }
@@ -407,7 +414,10 @@ fun WorkspaceScreen(
     state.remoteDeviceLogin?.let { login ->
         RemoteDeviceLoginDialog(
             login = login,
-            onOpen = { uriHandler.openUri(login.verificationUrl) },
+            onOpen = {
+                runCatching { uriHandler.openUri(login.verificationUrl) }
+                    .onFailure { onUrlOpenError("无法打开登录链接") }
+            },
             onCancel = onCancelLogin,
         )
     }
@@ -2023,8 +2033,13 @@ private fun Composer(
         composerScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { readComposerImageAttachment(context, uri) } }
             result.onSuccess { attachment ->
-                attachments = (attachments + attachment).takeLast(MAX_COMPOSER_IMAGES)
-                attachmentError = null
+                val next = (attachments + attachment).takeLast(MAX_COMPOSER_IMAGES)
+                if (next.exceedsAttachmentLimit()) {
+                    attachmentError = "图片附件总大小过大，请减少数量或压缩图片"
+                } else {
+                    attachments = next
+                    attachmentError = null
+                }
             }.onFailure { error ->
                 attachmentError = error.message ?: "无法附加图片"
             }
@@ -4054,6 +4069,7 @@ private fun ConnectionState(
 @Composable
 private fun ApprovalDialog(
     approval: com.codex.remote.domain.ApprovalRequest,
+    remaining: Int,
     onDecision: (String, Map<String, List<String>>) -> Unit,
 ) {
     val answers = remember(approval.requestId) {
@@ -4074,7 +4090,13 @@ private fun ApprovalDialog(
         title = { Text(approval.title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (remaining > 0) {
+                    Text("还有 $remaining 个待处理请求", style = MaterialTheme.typography.labelMedium)
+                }
                 Text(approval.detail, style = MaterialTheme.typography.bodyMedium)
+                approval.scopes.forEach { scope ->
+                    Text(scope, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                }
                 if (approval.kind == ApprovalKind.USER_INPUT) {
                     approval.questions.forEach { question ->
                         if (question.header.isNotBlank()) {
@@ -4100,6 +4122,8 @@ private fun ApprovalDialog(
                             value = answers[question.id].orEmpty(),
                             onValueChange = { answers[question.id] = it },
                             label = { Text("回复") },
+                            visualTransformation = if (question.isSecret) PasswordVisualTransformation()
+                                else VisualTransformation.None,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -4113,15 +4137,19 @@ private fun ApprovalDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
-                onDecision("accept", answers.mapValues { listOf(it.value) })
-            }, enabled = approval.kind != ApprovalKind.USER_INPUT || answers.values.all { it.isNotBlank() }) {
-                Text(if (approval.kind == ApprovalKind.USER_INPUT) "发送" else "允许一次")
+            if (approval.kind != ApprovalKind.UNKNOWN) {
+                Button(onClick = {
+                    onDecision("accept", answers.mapValues { listOf(it.value) })
+                }, enabled = approval.kind != ApprovalKind.USER_INPUT || answers.values.all { it.isNotBlank() }) {
+                    Text(if (approval.kind == ApprovalKind.USER_INPUT) "发送" else "允许一次")
+                }
             }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = { onDecision("decline", emptyMap()) }) { Text("拒绝") }
+                TextButton(onClick = { onDecision("decline", emptyMap()) }) {
+                    Text(if (approval.kind == ApprovalKind.UNKNOWN) "拒绝并关闭" else "拒绝")
+                }
                 if (approval.kind == ApprovalKind.COMMAND || approval.kind == ApprovalKind.FILE_CHANGE) {
                     TextButton(onClick = { onDecision("acceptForSession", emptyMap()) }) { Text("在本会话中允许") }
                 }
@@ -4275,12 +4303,13 @@ private fun readComposerImageAttachment(context: Context, uri: Uri): ComposerIma
             if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) declaredSize = cursor.getLong(sizeIndex)
         }
     }
+    val limitLabel = "${MAX_COMPOSER_IMAGE_BYTES / (1024 * 1024)} MB"
     if (declaredSize != null && declaredSize!! > MAX_COMPOSER_IMAGE_BYTES) {
-        throw IllegalArgumentException("图片大小不能超过 20 MB")
+        throw IllegalArgumentException("图片大小不能超过 $limitLabel")
     }
     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
         ?: throw IllegalArgumentException("无法读取所选图片")
-    if (bytes.size > MAX_COMPOSER_IMAGE_BYTES) throw IllegalArgumentException("图片大小不能超过 20 MB")
+    if (bytes.size > MAX_COMPOSER_IMAGE_BYTES) throw IllegalArgumentException("图片大小不能超过 $limitLabel")
     return ComposerImageAttachment(
         displayName = displayName,
         mimeType = mimeType,
@@ -4288,5 +4317,5 @@ private fun readComposerImageAttachment(context: Context, uri: Uri): ComposerIma
     )
 }
 
-private const val MAX_COMPOSER_IMAGES = 4
-private const val MAX_COMPOSER_IMAGE_BYTES = 20 * 1024 * 1024
+internal fun List<ComposerImageAttachment>.exceedsAttachmentLimit(): Boolean =
+    sumOf { it.dataUrl.length } > MAX_COMPOSER_ATTACHMENT_BASE64_CHARS

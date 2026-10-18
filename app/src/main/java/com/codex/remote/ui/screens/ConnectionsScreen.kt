@@ -174,6 +174,8 @@ fun ConnectionsScreen(
         ConnectionEditor(
             original = state.editingConnection,
             busy = state.isBusy,
+            isActive = state.editingConnection?.id != null &&
+                state.editingConnection.id == state.activeConnection?.id,
             onDismiss = onCloseEditor,
             onSave = onSave,
         )
@@ -296,6 +298,7 @@ private fun ConnectionRow(
 private fun ConnectionEditor(
     original: SavedConnection?,
     busy: Boolean,
+    isActive: Boolean,
     onDismiss: () -> Unit,
     onSave: (ConnectionDraft, Boolean) -> Unit,
 ) {
@@ -485,7 +488,10 @@ private fun ConnectionEditor(
                 ) {
                     TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { submit(false) }, enabled = !busy) { Text("保存") }
+                    OutlinedButton(
+                        onClick = { submit(false) },
+                        enabled = !busy && !isActive,
+                    ) { Text("保存") }
                     Spacer(Modifier.width(8.dp))
                     Button(onClick = { submit(true) }, enabled = !busy) { Text("保存并连接") }
                 }

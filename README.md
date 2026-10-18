@@ -1,6 +1,6 @@
 # Codex Remote for Android
 
-[![Android CI](https://github.com/liuaho6-commits/codex-remote-android/actions/workflows/android.yml/badge.svg)](https://github.com/liuaho6-commits/codex-remote-android/actions/workflows/android.yml)
+[![Android CI](https://github.com/YM040923/codex-remote-android/actions/workflows/android.yml/badge.svg)](https://github.com/YM040923/codex-remote-android/actions/workflows/android.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 An Android client for Codex hosts reached over SSH. A saved connection represents
@@ -53,8 +53,10 @@ Task pins are stored on the remote Codex thread rather than only on Android.
 
 ## Install
 
-Download the signed APK from the latest
-[GitHub release](https://github.com/liuaho6-commits/codex-remote-android/releases/latest).
+Download an APK from the latest
+[GitHub release](https://github.com/YM040923/codex-remote-android/releases/latest).
+Only the artifact without `-unsigned` is directly installable as a production
+build; an `-unsigned` artifact requires signing before installation.
 Android may ask you to allow installation from your browser or file manager.
 
 The project is an unofficial community client. It is not affiliated with or

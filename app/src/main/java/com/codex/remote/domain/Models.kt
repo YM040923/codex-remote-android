@@ -217,6 +217,10 @@ data class ComposerImageAttachment(
     val dataUrl: String,
 )
 
+internal const val MAX_COMPOSER_IMAGE_BYTES = 12 * 1024 * 1024
+internal const val MAX_COMPOSER_IMAGES = 4
+internal const val MAX_COMPOSER_ATTACHMENT_BASE64_CHARS = 24 * 1024 * 1024
+
 data class RemoteServerInfo(
     val userAgent: String,
     val codexHome: String,
@@ -369,6 +373,7 @@ data class ApprovalQuestion(
     val header: String,
     val question: String,
     val options: List<String> = emptyList(),
+    val isSecret: Boolean = false,
 )
 
 data class ApprovalRequest(
@@ -379,6 +384,7 @@ data class ApprovalRequest(
     val rawMethod: String,
     val rawParams: String = "{}",
     val questions: List<ApprovalQuestion> = emptyList(),
+    val scopes: List<String> = emptyList(),
 )
 
 enum class ConnectionStatus { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
@@ -447,7 +453,7 @@ data class AppUiState(
     val isExternalSnapshotRefreshing: Boolean = false,
     val externalSnapshotUpdatedAt: Long? = null,
     val externalSnapshotError: String? = null,
-    val pendingApproval: ApprovalRequest? = null,
+    val pendingApprovals: List<ApprovalRequest> = emptyList(),
     val pendingHostKeyFingerprint: String? = null,
     val isRestoringLastConnection: Boolean = true,
     val showConnections: Boolean = false,

@@ -7,7 +7,9 @@ import argparse
 import base64
 import hashlib
 import json
+import secrets
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -836,14 +838,17 @@ def handle_client(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22222)
     parser.add_argument("--username", default="codex-test")
-    parser.add_argument("--password", default="codex-test")
+    parser.add_argument("--password", default=None)
     parser.add_argument("--state-dir", type=Path, required=True)
     args = parser.parse_args()
 
     args.state_dir.mkdir(parents=True, exist_ok=True)
+    if not args.password:
+        args.password = secrets.token_urlsafe(18)
+        print(f"mock SSH password: {args.password}", file=sys.stderr)
     events_path = args.state_dir / "events.jsonl"
     events_path.write_text("", encoding="utf-8")
     events = EventLog(events_path)

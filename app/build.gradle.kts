@@ -5,7 +5,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val appVersionName = "0.1.5"
+import java.util.jar.Attributes
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
+import java.util.zip.ZipEntry
+
+val appVersionName = "0.1.6"
 
 val releaseKeystorePath = providers.environmentVariable("CODEX_REMOTE_KEYSTORE_PATH").orNull
 val releaseKeystorePassword = providers.environmentVariable("CODEX_REMOTE_KEYSTORE_PASSWORD").orNull
@@ -31,7 +36,7 @@ android {
         applicationId = "com.codex.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
+        versionCode = 7
         versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -145,5 +150,25 @@ tasks.configureEach {
     when (name) {
         "assembleDebug" -> finalizedBy("copyNamedDebugApk")
         "assembleRelease" -> finalizedBy("copyNamedReleaseApk")
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    // Gradle writes this classpath into a UTF-8 @argfile, but this Windows JVM
+    // reads argfiles as GBK; a manifest jar keeps the argument ASCII-only.
+    doFirst {
+        val manifestJar = File.createTempFile("codex-remote-", "-classpath.jar").apply { deleteOnExit() }
+        val attributes = Attributes()
+        attributes.putValue("Manifest-Version", "1.0")
+        attributes.putValue(
+            "Class-Path",
+            classpath.files.joinToString(" ") { it.toURI().toASCIIString() },
+        )
+        val output = JarOutputStream(manifestJar.outputStream().buffered())
+        output.use {
+            it.putNextEntry(ZipEntry("META-INF/MANIFEST.MF"))
+            Manifest().apply { mainAttributes.putAll(attributes) }.write(it)
+        }
+        classpath = files(manifestJar)
     }
 }

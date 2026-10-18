@@ -16,11 +16,17 @@ import net.schmizz.sshj.DefaultSecurityProviderConfig
 import net.schmizz.sshj.common.Buffer
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
+import net.schmizz.sshj.userauth.keyprovider.KeyProviderUtil
+import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
+import net.schmizz.sshj.userauth.keyprovider.PKCS8KeyFile
+import net.schmizz.sshj.userauth.password.PasswordFinder
+import net.schmizz.sshj.userauth.password.Resource
 import java.io.Closeable
-import java.io.File
+import java.io.StringReader
 import java.security.MessageDigest
 import java.security.PublicKey
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 
 private const val WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 30_000
@@ -45,6 +51,7 @@ class ActiveSshTransport internal constructor(
 ) : Closeable {
     private val webSocket = SshWebSocketChannel(command.inputStream, command.outputStream)
     val errorReader = command.errorStream.bufferedReader(Charsets.UTF_8)
+    private val closed = AtomicBoolean(false)
 
     internal suspend fun connect() = withContext(Dispatchers.IO) {
         ssh.timeout = WEBSOCKET_HANDSHAKE_TIMEOUT_MS
@@ -63,6 +70,7 @@ class ActiveSshTransport internal constructor(
     suspend fun readMessage(): String = withContext(Dispatchers.IO) { webSocket.readText() }
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         webSocket.close()
         runCatching { command.close() }
         runCatching { session.close() }
@@ -168,19 +176,20 @@ class SshAppServerTransportFactory(private val context: Context) {
         username: String,
         secrets: ConnectionSecrets,
     ) {
-        val keyFile = File.createTempFile("codex_remote_", ".key", context.cacheDir)
-        try {
-            keyFile.writeText(secrets.privateKey, Charsets.UTF_8)
-            val provider = if (secrets.passphrase.isBlank()) {
-                ssh.loadKeys(keyFile.absolutePath)
-            } else {
-                ssh.loadKeys(keyFile.absolutePath, secrets.passphrase.toCharArray())
-            }
-            ssh.authPublickey(username, provider)
-        } finally {
-            keyFile.writeText("")
-            keyFile.delete()
+        val provider = when (
+            KeyProviderUtil.detectKeyFileFormat(StringReader(secrets.privateKey), true)
+        ) {
+            net.schmizz.sshj.userauth.keyprovider.KeyFormat.PKCS8 -> PKCS8KeyFile()
+            else -> OpenSSHKeyFile()
         }
+        provider.init(
+            StringReader(secrets.privateKey),
+            if (secrets.passphrase.isBlank()) null else object : PasswordFinder {
+                override fun reqPassword(resource: Resource<*>?): CharArray = secrets.passphrase.toCharArray()
+                override fun shouldRetry(resource: Resource<*>?): Boolean = false
+            },
+        )
+        ssh.authPublickey(username, provider)
     }
 
     private fun sha256Fingerprint(key: PublicKey): String {
@@ -245,14 +254,30 @@ class SshAppServerTransportFactory(private val context: Context) {
         return try {
             val command = session.exec(commandLine)
             try {
+                val stdout = StringBuilder()
+                val stderr = StringBuilder()
+                val stdoutReader = Thread {
+                    command.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                        reader.forEachLine { stdout.appendLine(it) }
+                    }
+                }
+                val stderrReader = Thread {
+                    command.errorStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                        reader.forEachLine { stderr.appendLine(it) }
+                    }
+                }
+                stdoutReader.start()
+                stderrReader.start()
                 command.join(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 if (command.isOpen) {
                     throw RemoteCodexUnavailableException("远端 Codex 预检超时")
                 }
+                stdoutReader.join(TimeUnit.SECONDS.toMillis(2))
+                stderrReader.join(TimeUnit.SECONDS.toMillis(2))
                 ProbeResult(
                     exitStatus = command.exitStatus ?: -1,
-                    stdout = command.inputStream.bufferedReader(Charsets.UTF_8).readText(),
-                    stderr = command.errorStream.bufferedReader(Charsets.UTF_8).readText(),
+                    stdout = stdout.toString(),
+                    stderr = stderr.toString(),
                 )
             } finally {
                 runCatching { command.close() }

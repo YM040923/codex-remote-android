@@ -14,9 +14,11 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -311,11 +313,14 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22223)
     parser.add_argument("--username", default="codex-real")
-    parser.add_argument("--password", default="codex-real")
+    parser.add_argument("--password")
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--node", type=Path, default=default_node)
     parser.add_argument("--codex-js", type=Path, default=default_codex_js)
     args = parser.parse_args()
+    if not args.password:
+        args.password = secrets.token_urlsafe(18)
+        print(f"Generated bridge password: {args.password}", file=sys.stderr, flush=True)
 
     resolve_codex_process(args.node, args.codex_js, "--version")
     args.state_dir.mkdir(parents=True, exist_ok=True)

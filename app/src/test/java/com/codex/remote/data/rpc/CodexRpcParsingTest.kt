@@ -239,6 +239,29 @@ class CodexRpcParsingTest {
     }
 
     @Test
+    fun joinsLegacyCommandArraysForApprovalDisplay() {
+        val params = json.parseToJsonElement(
+            """{"command":["git","status","--short"],"reason":"Inspect changes"}""",
+        ).jsonObject
+
+        assertEquals("git status --short", CodexRpcClient.commandText(params))
+    }
+
+    @Test
+    fun reportsTheActualPermissionScopesRequestedByServer() {
+        val params = json.parseToJsonElement(
+            """{"reason":"Need network","permissions":{"network":true,"fileSystem":{"read":["/srv/app"],"write":["/srv/app/out"]}}}""",
+        ).jsonObject
+
+        val scopes = CodexRpcClient.permissionScopes(params)
+
+        assertTrue(scopes.any { it.contains("网络") })
+        assertTrue(scopes.any { it.contains("/srv/app") })
+        assertTrue(scopes.any { it.contains("/srv/app/out") })
+    }
+
+
+    @Test
     fun buildsOfficialThreadGoalRpcParamsWithoutInventingNullFields() {
         val get = CodexRpcClient.threadGoalGetParams("thread-1")
         val set = CodexRpcClient.threadGoalSetParams(

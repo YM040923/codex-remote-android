@@ -1,6 +1,8 @@
 package com.codex.remote.ui.screens
 
 import com.codex.remote.domain.PermissionMode
+import com.codex.remote.domain.ComposerImageAttachment
+import com.codex.remote.domain.MAX_COMPOSER_ATTACHMENT_BASE64_CHARS
 import com.codex.remote.domain.TimelineItem
 import com.codex.remote.domain.TimelineKind
 import org.junit.Assert.assertEquals
@@ -94,5 +96,19 @@ val block = "${'$'}stillRaw${'$'}"
         assertEquals(listOf("cmd-1", "cmd-2"), presentation[1].sourceItemIds)
         assertTrue(presentation[1].item.body.contains("1. pwd"))
         assertTrue(presentation[1].item.body.contains("2. git status"))
+    }
+
+    @Test
+    fun attachmentBudgetCountsEncodedPayloadNotJustImageBytes() {
+        val oversized = listOf(
+            ComposerImageAttachment(
+                displayName = "a.png",
+                mimeType = "image/png",
+                dataUrl = "data:image/png;base64," + "a".repeat(MAX_COMPOSER_ATTACHMENT_BASE64_CHARS),
+            ),
+        )
+
+        assertTrue(oversized.exceedsAttachmentLimit())
+        assertFalse(oversized.map { it.copy(dataUrl = "data:image/png;base64,AA==") }.exceedsAttachmentLimit())
     }
 }

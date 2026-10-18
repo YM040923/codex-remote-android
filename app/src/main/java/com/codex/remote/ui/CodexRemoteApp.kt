@@ -77,6 +77,7 @@ fun CodexRemoteApp(viewModel: AppViewModel) {
             onTrustHostKey = viewModel::trustPendingHostKey,
             onRejectHostKey = viewModel::rejectPendingHostKey,
             onDismissNotice = viewModel::clearNotice,
+            onUrlOpenError = viewModel::showNotice,
         )
     }
 }

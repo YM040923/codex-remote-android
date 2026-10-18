@@ -7,6 +7,7 @@ import com.codex.remote.data.rpc.AppServerEvent
 import com.codex.remote.data.rpc.CodexRpcClient
 import com.codex.remote.data.rpc.RpcException
 import com.codex.remote.data.rpc.isActiveWriterConflict
+import com.codex.remote.data.ssh.ActiveSshTransport
 import com.codex.remote.data.ssh.SshAppServerTransportFactory
 import com.codex.remote.data.ssh.UnknownHostKeyException
 import com.codex.remote.data.store.ConnectionStore
@@ -39,10 +40,13 @@ import com.codex.remote.domain.withThreadArchived
 import com.codex.remote.domain.withThreadRenamed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -57,38 +61,49 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private var rpc: CodexRpcClient? = null
     private var eventJob: Job? = null
+    private var connectionJob: Job? = null
     private var externalThreadPollJob: Job? = null
     private var didRestoreLastConnection = false
+    private var connectionGeneration = 0L
 
     init {
         viewModelScope.launch {
-            store.connections.collect { connections ->
-                val sortedConnections = connections.sortedByDescending { it.lastUsedAt }
-                val connectionToRestore = if (!didRestoreLastConnection) {
-                    didRestoreLastConnection = true
-                    sortedConnections.lastUsedConnectionOrNull()
-                } else {
-                    null
-                }
-                val restoreConnection = connectionToRestore?.takeIf { _state.value.activeConnection == null }
-                _state.update { current ->
-                    val refreshedActive = current.activeConnection?.let { active ->
-                        connections.firstOrNull { it.id == active.id } ?: active
+            store.connections
+                .catch { error ->
+                    _state.update {
+                        it.copy(
+                            isRestoringLastConnection = false,
+                            notice = error.message ?: "连接配置无法读取",
+                        )
                     }
-                    current.copy(
-                        savedConnections = sortedConnections,
-                        activeConnection = restoreConnection ?: refreshedActive,
-                        connectionStatus = if (restoreConnection != null) ConnectionStatus.CONNECTING else current.connectionStatus,
-                        connectionMessage = if (restoreConnection != null) {
-                            "正在连接 ${restoreConnection.host}…"
-                        } else {
-                            current.connectionMessage
-                        },
-                        isRestoringLastConnection = false,
-                    )
                 }
-                restoreConnection?.let(::connect)
-            }
+                .collect { connections ->
+                    val sortedConnections = connections.sortedByDescending { it.lastUsedAt }
+                    val connectionToRestore = if (!didRestoreLastConnection) {
+                        didRestoreLastConnection = true
+                        sortedConnections.lastUsedConnectionOrNull()
+                    } else {
+                        null
+                    }
+                    val restoreConnection = connectionToRestore?.takeIf { _state.value.activeConnection == null }
+                    _state.update { current ->
+                        val refreshedActive = current.activeConnection?.let { active ->
+                            connections.firstOrNull { it.id == active.id } ?: active
+                        }
+                        current.copy(
+                            savedConnections = sortedConnections,
+                            activeConnection = restoreConnection ?: refreshedActive,
+                            connectionStatus = if (restoreConnection != null) ConnectionStatus.CONNECTING else current.connectionStatus,
+                            connectionMessage = if (restoreConnection != null) {
+                                "正在连接 ${restoreConnection.host}…"
+                            } else {
+                                current.connectionMessage
+                            },
+                            isRestoringLastConnection = false,
+                        )
+                    }
+                    restoreConnection?.let(::connect)
+                }
         }
     }
 
@@ -105,9 +120,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun saveConnection(draft: ConnectionDraft, connectAfterSave: Boolean) {
         viewModelScope.launch {
             _state.update { it.copy(isBusy = true, notice = null) }
+            val activeBeforeSave = _state.value.activeConnection
             runCatching {
                 store.save(draft, _state.value.editingConnection)
             }.onSuccess { saved ->
+                val activeChanged = activeBeforeSave?.id == saved.id &&
+                    activeBeforeSave != saved
+                if (activeChanged) disconnectInternal(clearActive = false)
                 _state.update {
                     it.copy(
                         isBusy = false,
@@ -116,7 +135,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         showConnections = !connectAfterSave,
                     )
                 }
-                if (connectAfterSave) connect(saved)
+                if (connectAfterSave || activeChanged) connect(saved)
             }.onFailure(::showError)
         }
     }
@@ -129,8 +148,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connect(connection: SavedConnection) {
-        viewModelScope.launch {
-            disconnectInternal(clearActive = false)
+        connectionGeneration++
+        val generation = connectionGeneration
+        connectionJob?.cancel()
+        connectionJob = viewModelScope.launch {
+            closeConnection(clearActive = false)
             _state.update {
                 it.copy(
                     activeConnection = connection,
@@ -191,25 +213,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     notice = null,
                 )
             }
+            var openedTransport: ActiveSshTransport? = null
+            var client: CodexRpcClient? = null
             runCatching {
                 val secrets = withContext(Dispatchers.IO) { store.decrypt(connection) }
                 val transport = transportFactory.open(connection, secrets)
-                val client = CodexRpcClient(transport)
-                rpc = client
-                observeEvents(client)
-                val server = withTimeout(20_000) { client.initialize() }
-                val account = withTimeout(20_000) { client.readAccount() }
-                val models = withTimeout(30_000) { client.listModels() }
-                val threads = withTimeout(60_000) { client.listThreads() }
+                openedTransport = transport
+                currentCoroutineContext().ensureActive()
+                if (generation != connectionGeneration) return@runCatching
+                val activeClient = CodexRpcClient(transport)
+                client = activeClient
+                rpc = activeClient
+                observeEvents(activeClient)
+                val server = withTimeout(20_000) { activeClient.initialize() }
+                val account = withTimeout(20_000) { activeClient.readAccount() }
+                val models = withTimeout(30_000) { activeClient.listModels() }
+                val threads = withTimeout(60_000) { activeClient.listThreads() }
                 val collaborationModes = runCatching {
-                    withTimeout(20_000) { client.listCollaborationModes() }
+                    withTimeout(20_000) { activeClient.listCollaborationModes() }
                 }.getOrDefault(emptyList())
                 val permissionProfiles = runCatching {
-                    withTimeout(20_000) { client.listPermissionProfiles(null) }
+                    withTimeout(20_000) { activeClient.listPermissionProfiles(null) }
                 }.getOrDefault(emptyList())
-                store.recordUsed(connection.id)
+                if (generation == connectionGeneration) {
+                    store.recordUsed(connection.id)
+                }
                 ConnectionBootstrap(server, account, models, threads, collaborationModes, permissionProfiles)
-            }.onSuccess { bootstrap ->
+            }.onSuccess { value ->
+                if (generation != connectionGeneration) return@onSuccess
+                openedTransport = null
+                client = null
+                val bootstrap = value as ConnectionBootstrap
                 val projects = groupThreadsByProject(bootstrap.threads)
                 val selectedModel = bootstrap.models.firstOrNull { model -> model.isDefault }
                     ?: bootstrap.models.firstOrNull()
@@ -243,8 +277,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 refreshComposerCatalog()
             }.onFailure { error ->
-                rpc?.close()
-                rpc = null
+                val failedClient = client
+                if (failedClient != null) {
+                    if (rpc === failedClient) rpc = null
+                    eventJob?.cancel()
+                    eventJob = null
+                    failedClient.close()
+                } else {
+                    openedTransport?.close()
+                }
+                openedTransport = null
+                client = null
+                if (generation != connectionGeneration) return@onFailure
                 val unknownHostKey = generateSequence(error) { it.cause }
                     .filterIsInstance<UnknownHostKeyException>()
                     .firstOrNull()
@@ -292,6 +336,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun disconnectInternal(clearActive: Boolean) {
+        cancelConnectionWork()
+        closeConnection(clearActive)
+    }
+
+    private fun cancelConnectionWork() {
+        connectionGeneration++
+        connectionJob?.cancel()
+        connectionJob = null
+    }
+
+    private fun closeConnection(clearActive: Boolean) {
         eventJob?.cancel()
         eventJob = null
         externalThreadPollJob?.cancel()
@@ -351,7 +406,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 isExternalSnapshotRefreshing = false,
                 externalSnapshotUpdatedAt = null,
                 externalSnapshotError = null,
-                pendingApproval = null,
+                pendingApprovals = emptyList(),
                 pendingHostKeyFingerprint = null,
             )
         }
@@ -1415,11 +1470,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun respondToApproval(decision: String, answers: Map<String, List<String>> = emptyMap()) {
-        val approval = _state.value.pendingApproval ?: return
+        val approval = _state.value.pendingApprovals.firstOrNull() ?: return
+        if (approval.kind == ApprovalKind.UNKNOWN && decision == "accept") {
+            showNotice("无法确认该请求的风险，已拒绝")
+            return
+        }
         val client = rpc ?: return
         viewModelScope.launch {
             runCatching { client.respondToApproval(approval, decision, answers) }
-                .onSuccess { _state.update { it.copy(pendingApproval = null) } }
+                .onSuccess {
+                    _state.update { state ->
+                        state.copy(pendingApprovals = state.pendingApprovals.filterNot {
+                            it.requestId == approval.requestId
+                        })
+                    }
+                }
                 .onFailure(::showError)
         }
     }
@@ -1565,6 +1630,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun clearNotice() = _state.update { it.copy(notice = null) }
 
+    fun showNotice(message: String) = _state.update { it.copy(notice = message) }
+
     private fun observeEvents(client: CodexRpcClient) {
         eventJob?.cancel()
         eventJob = viewModelScope.launch {
@@ -1602,7 +1669,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     is AppServerEvent.Approval -> _state.update { state ->
-                        if (state.acceptsThreadEvent(event.threadId)) state.copy(pendingApproval = event.request) else state
+                        if (state.acceptsThreadEvent(event.threadId)) {
+                            state.copy(
+                                pendingApprovals = (
+                                    state.pendingApprovals.filterNot { it.requestId == event.request.requestId } +
+                                        event.request
+                                    ),
+                            )
+                        } else {
+                            state
+                        }
+                    }
+                    is AppServerEvent.ApprovalResolved -> _state.update { state ->
+                        state.copy(pendingApprovals = state.pendingApprovals.filterNot {
+                            it.requestId == event.requestId
+                        })
                     }
                     AppServerEvent.AccountChanged -> refreshRemoteAccount()
                     AppServerEvent.ThreadsChanged -> refreshThreads()
@@ -1689,18 +1770,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     }
-                    is AppServerEvent.Failure -> _state.update { state ->
-                        if (state.acceptsThreadEvent(event.threadId)) {
-                            state.copy(
-                                notice = event.message,
-                                isTurnRunning = false,
-                                activeTurnId = null,
-                                canResumeTurn = state.isTurnRunning || state.isStoppingTurn || state.canResumeTurn,
-                                isStoppingTurn = false,
-                                timeline = state.timeline.withRunningItemsCompleted(),
-                            )
-                        } else {
-                            state
+                    is AppServerEvent.Failure -> {
+                        _state.update { state ->
+                            if (event.connectionLost) {
+                                state.copy(
+                                    connectionStatus = ConnectionStatus.ERROR,
+                                    connectionMessage = event.message,
+                                    notice = event.message,
+                                    isTurnRunning = false,
+                                    activeTurnId = null,
+                                    isStoppingTurn = false,
+                                    pendingApprovals = emptyList(),
+                                    timeline = state.timeline.withRunningItemsCompleted(),
+                                )
+                            } else if (state.acceptsThreadEvent(event.threadId)) {
+                                state.copy(
+                                    notice = event.message,
+                                    isTurnRunning = false,
+                                    activeTurnId = null,
+                                    canResumeTurn = state.isTurnRunning || state.isStoppingTurn || state.canResumeTurn,
+                                    isStoppingTurn = false,
+                                    timeline = state.timeline.withRunningItemsCompleted(),
+                                )
+                            } else {
+                                state
+                            }
+                        }
+                        if (event.connectionLost) {
+                            if (rpc === client) {
+                                rpc = null
+                                eventJob = null
+                            }
+                            client.close()
                         }
                     }
                     is AppServerEvent.Warning -> _state.update { it.copy(notice = event.message) }
@@ -1923,6 +2024,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        cancelConnectionWork()
         rpc?.close()
         super.onCleared()
     }

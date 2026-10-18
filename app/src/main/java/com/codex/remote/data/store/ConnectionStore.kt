@@ -18,12 +18,13 @@ import java.io.IOException
 import java.util.UUID
 
 private val Context.connectionDataStore by preferencesDataStore(name = "codex_remote_connections")
+private const val CONNECTIONS_KEY = "connections_v1"
 
 class ConnectionStore(
     private val context: Context,
     private val cipher: SecretCipher = SecretCipher(),
 ) {
-    private val key = stringPreferencesKey("connections_v1")
+    private val key = stringPreferencesKey(CONNECTIONS_KEY)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val serializer = ListSerializer(SavedConnection.serializer())
 
@@ -33,9 +34,7 @@ class ConnectionStore(
             else throw error
         }
         .map { preferences ->
-            preferences[key]?.let { encoded ->
-                runCatching { json.decodeFromString(serializer, encoded) }.getOrDefault(emptyList())
-            } ?: emptyList()
+            preferences.decodeConnections()
         }
 
     suspend fun save(draft: ConnectionDraft, original: SavedConnection? = null): SavedConnection {
@@ -92,10 +91,15 @@ class ConnectionStore(
 
     private suspend fun update(transform: (List<SavedConnection>) -> List<SavedConnection>) {
         context.connectionDataStore.edit { preferences ->
-            val current = preferences[key]?.let {
-                runCatching { json.decodeFromString(serializer, it) }.getOrDefault(emptyList())
-            } ?: emptyList()
+            val current = preferences.decodeConnections()
             preferences[key] = json.encodeToString(serializer, transform(current))
+        }
+    }
+
+    private fun androidx.datastore.preferences.core.Preferences.decodeConnections(): List<SavedConnection> {
+        val encoded = this[key] ?: return emptyList()
+        return runCatching { json.decodeFromString(serializer, encoded) }.getOrElse { error ->
+            throw IllegalStateException("连接配置无法解析；为避免覆盖原数据，本次拒绝写入", error)
         }
     }
 }

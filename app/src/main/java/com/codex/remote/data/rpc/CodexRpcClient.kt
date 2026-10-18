@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -79,6 +80,7 @@ sealed interface AppServerEvent {
         val turnStatus: String? = null,
     ) : AppServerEvent
     data class Approval(val threadId: String?, val request: ApprovalRequest) : AppServerEvent
+    data class ApprovalResolved(val requestId: String) : AppServerEvent
     data object AccountChanged : AppServerEvent
     data object ThreadsChanged : AppServerEvent
     data object SkillsChanged : AppServerEvent
@@ -93,7 +95,11 @@ sealed interface AppServerEvent {
         val settings: RemoteThreadSettingsSnapshot,
     ) : AppServerEvent
     data class LoginCompleted(val success: Boolean, val error: String?) : AppServerEvent
-    data class Failure(val message: String, val threadId: String? = null) : AppServerEvent
+    data class Failure(
+        val message: String,
+        val threadId: String? = null,
+        val connectionLost: Boolean = false,
+    ) : AppServerEvent
     data class Warning(val message: String) : AppServerEvent
     data class Diagnostic(val message: String) : AppServerEvent
 }
@@ -639,6 +645,9 @@ class CodexRpcClient(
             }
             ApprovalKind.PERMISSION -> buildJsonObject {
                 val original = runCatching { json.parseToJsonElement(request.rawParams).jsonObject }.getOrNull()
+                if (decision == "accept" && request.scopes.isEmpty()) {
+                    error("无法确认权限范围，已拒绝授权")
+                }
                 put(
                     "permissions",
                     if (decision == "accept") original?.obj("permissions") ?: buildJsonObject {}
@@ -652,6 +661,17 @@ class CodexRpcClient(
     }
 
     suspend fun request(method: String, params: JsonObject = buildJsonObject {}): JsonObject {
+        val timeoutMs = when {
+            method.endsWith("/list") || method in setOf("thread/read", "thread/resume", "initialize") ->
+                LONG_RPC_TIMEOUT_MS
+            else -> RPC_TIMEOUT_MS
+        }
+        return withTimeout(timeoutMs) {
+            requestWithoutTimeout(method, params)
+        }
+    }
+
+    private suspend fun requestWithoutTimeout(method: String, params: JsonObject): JsonObject {
         val id = requestId.getAndIncrement().toString()
         val deferred = CompletableDeferred<JsonObject>()
         pending[id] = deferred
@@ -711,11 +731,11 @@ class CodexRpcClient(
                 val params = message.obj("params") ?: buildJsonObject {}
                 if (id != null) handleServerRequest(id, method, params) else handleNotification(method, params)
             }
-            _events.emit(AppServerEvent.Failure("远端 app-server 已断开"))
+            _events.emit(AppServerEvent.Failure("远端 app-server 已断开", connectionLost = true))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
-            _events.emit(AppServerEvent.Failure(error.message ?: "SSH 数据流已中断"))
+            _events.emit(AppServerEvent.Failure(error.message ?: "SSH 数据流已中断", connectionLost = true))
         } finally {
             val error = RpcException("远端连接已关闭")
             pending.values.forEach { it.completeExceptionally(error) }
@@ -733,6 +753,12 @@ class CodexRpcClient(
     }
 
     private suspend fun handleNotification(method: String, params: JsonObject) {
+        if (method == "serverRequest/resolved") {
+            (params.string("requestId") ?: params.string("id"))?.let { requestId ->
+                _events.emit(AppServerEvent.ApprovalResolved(requestId))
+            }
+            return
+        }
         when (method) {
             "item/started", "item/completed" -> params.obj("item")?.let(::parseTimelineItem)?.let { item ->
                 val status = item.status.ifBlank {
@@ -871,7 +897,7 @@ class CodexRpcClient(
                 requestId = id,
                 kind = ApprovalKind.COMMAND,
                 title = "允许执行命令？",
-                detail = params.string("command") ?: params.string("reason") ?: "远端 Codex 请求执行命令",
+                detail = commandText(params) ?: params.string("reason") ?: "远端 Codex 请求执行命令",
                 rawMethod = method,
                 rawParams = params.toString(),
             )
@@ -890,6 +916,7 @@ class CodexRpcClient(
                 detail = params.string("reason") ?: "远端 Codex 请求额外文件或网络权限",
                 rawMethod = method,
                 rawParams = params.toString(),
+                scopes = permissionScopes(params),
             )
             "item/tool/requestUserInput" -> {
                 val questions = params.array("questions").mapNotNull { element ->
@@ -900,6 +927,7 @@ class CodexRpcClient(
                         header = question.string("header").orEmpty(),
                         question = question.string("question") ?: "请输入回复",
                         options = question.array("options").mapNotNull { it.asObject()?.string("label") },
+                        isSecret = question.boolean("isSecret") || question.boolean("secret"),
                     )
                 }
                 ApprovalRequest(
@@ -912,12 +940,57 @@ class CodexRpcClient(
                     questions = questions,
                 )
             }
-            else -> ApprovalRequest(id, ApprovalKind.UNKNOWN, "远端请求", method, method, params.toString())
+            else -> ApprovalRequest(
+                requestId = id,
+                kind = ApprovalKind.UNKNOWN,
+                title = "未知远端请求",
+                detail = "$method\n\n${params}",
+                rawMethod = method,
+                rawParams = params.toString(),
+            )
         }
         _events.emit(AppServerEvent.Approval(params.string("threadId"), request))
     }
 
     companion object {
+        private const val RPC_TIMEOUT_MS = 30_000L
+        private const val LONG_RPC_TIMEOUT_MS = 90_000L
+
+        internal fun permissionScopes(params: JsonObject): List<String> {
+            val permissions = params.obj("permissions") ?: return emptyList()
+            val result = mutableListOf<String>()
+            permissions["network"]?.let { network ->
+                result += when (network) {
+                    is JsonPrimitive -> "网络：${network.contentOrNull ?: network}"
+                    else -> "网络：$network"
+                }
+            }
+            permissions["fileSystem"]?.let { fileSystem ->
+                val obj = fileSystem.asObject()
+                if (obj == null) {
+                    result += "文件系统：$fileSystem"
+                } else {
+                    obj["read"]?.let { result += "读取路径：$it" }
+                    obj["write"]?.let { result += "写入路径：$it" }
+                    obj.forEach { (key, value) ->
+                        if (key !in setOf("read", "write")) result += "$key：$value"
+                    }
+                }
+            }
+            permissions.forEach { (key, value) ->
+                if (key !in setOf("network", "fileSystem")) result += "$key：$value"
+            }
+            return result.ifEmpty { listOf("权限范围：$permissions") }
+        }
+
+        internal fun commandText(params: JsonObject): String? {
+            params.string("command")?.let { return it }
+            val array = params.array("command")
+            return array.takeIf { it.isNotEmpty() }
+                ?.joinToString(" ") { it.jsonPrimitive.contentOrNull.orEmpty() }
+                ?.takeIf(String::isNotBlank)
+        }
+
         internal fun initializeParams(): JsonObject = buildJsonObject {
             put("clientInfo", buildJsonObject {
                 put("name", "codex_remote_android")
@@ -1165,6 +1238,10 @@ class CodexRpcClient(
             mentions: List<ComposerMention>,
             attachments: List<ComposerImageAttachment>,
         ): JsonArray = buildJsonArray {
+            val encodedSize = attachments.distinctBy { it.id }.sumOf { it.dataUrl.length }
+            require(encodedSize <= com.codex.remote.domain.MAX_COMPOSER_ATTACHMENT_BASE64_CHARS) {
+                "图片附件总大小过大，请减少数量或压缩图片"
+            }
             if (text.isNotBlank()) {
                 add(buildJsonObject {
                     put("type", "text")
