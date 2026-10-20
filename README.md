@@ -9,6 +9,8 @@ conversation and groups projects from each thread's working directory. The app
 does not run a local agent or create a second app-server: it connects through
 `codex app-server proxy` to the host's shared app-server daemon.
 
+The full release history, signing groups and per-version changes are tracked in
+[docs/RELEASE_INDEX.md](docs/RELEASE_INDEX.md).
 Implementation notes and the audited Codex source boundary are documented in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 The current Desktop parity matrix and known gaps are tracked in
