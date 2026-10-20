@@ -1,6 +1,6 @@
 # Codex Remote for Android
 
-[![Android CI](https://github.com/liuaho6-commits/codex-remote-android/actions/workflows/android.yml/badge.svg)](https://github.com/liuaho6-commits/codex-remote-android/actions/workflows/android.yml)
+[![Android CI](https://github.com/YM040923/codex-remote-android/actions/workflows/android.yml/badge.svg)](https://github.com/YM040923/codex-remote-android/actions/workflows/android.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 An Android client for Codex hosts reached over SSH. A saved connection represents
@@ -54,11 +54,36 @@ Task pins are stored on the remote Codex thread rather than only on Android.
 ## Install
 
 Download the signed APK from the latest
-[GitHub release](https://github.com/liuaho6-commits/codex-remote-android/releases/latest).
+[GitHub release](https://github.com/YM040923/codex-remote-android/releases/latest).
 Android may ask you to allow installation from your browser or file manager.
 
 The project is an unofficial community client. It is not affiliated with or
 endorsed by OpenAI. Codex and OpenAI are trademarks of their respective owner.
+
+## Versions and signing
+
+The current recommended build is **v0.2.3**. Every release APK and its
+`.sha256` checksum are published on the
+[releases page](https://github.com/YM040923/codex-remote-android/releases).
+Verify a download before installing:
+
+```sh
+sha256sum -c Codex-Remote-v0.2.3-release.apk.sha256
+```
+
+| Version | Signing certificate | Upgrade path |
+| --- | --- | --- |
+| v0.1.7, v0.1.8, v0.1.9 | `CN=YM040923 Codex Remote` | Interchangeable within this group |
+| v0.2.0, v0.2.1, v0.2.2, v0.2.3 | `CN=Codex Remote Release` | Interchangeable within this group |
+
+The two groups use **different signing keys**. Moving from any v0.1.x to any
+v0.2.x requires uninstalling the old app first; Android refuses the install
+otherwise because the signatures do not match. Uninstalling also clears the
+locally stored SSH passwords and pinned host fingerprints, so connections must
+be re-entered afterwards.
+
+Artifacts named `*-release-unsigned.apk` carry no signature and cannot be
+installed directly. They exist only for debugging.
 
 ## Build
 
