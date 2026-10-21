@@ -1,32 +1,59 @@
 package com.codex.remote.ui.theme
 
 import android.app.Activity
-import com.codex.remote.R
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import com.codex.remote.R
 
-// Monochrome surfaces: every panel is pure white with pure black content.
-val ChatGPTBlue = Color(0xFF0B63CE)
+// Neutral ramp measured from reference chat clients: the conversation itself carries no
+// brand color, so contrast comes from ink weight and surface steps rather than hue.
+object CodexPalette {
+    val Ink = Color(0xFF0D0D0D)
+    val InkMuted = Color(0xFF4C4C4C)
+    val InkFaint = Color(0xFFB6B6B6)
+    val Void = Color(0xFFFFFFFF)
+
+    val Neutral50 = Color(0xFFFAFAFA)
+    val Neutral100 = Color(0xFFF7F7F7)
+    val Neutral150 = Color(0xFFF5F5F5)
+    val Neutral200 = Color(0xFFEFEFEF)
+    val Neutral300 = Color(0xFFE8E8E8)
+    val Neutral400 = Color(0xFFD9D9D9)
+
+    val DiffAdded = Color(0xFFE9F3EC)
+    val OnDiffAdded = Color(0xFF1F6B45)
+    val DiffRemoved = Color(0xFFFBEDEA)
+    val OnDiffRemoved = Color(0xFF8C2F1F)
+
+    val NightVoid = Color(0xFF0F0F0F)
+    val Night50 = Color(0xFF141414)
+    val Night100 = Color(0xFF191919)
+    val Night150 = Color(0xFF1F1F1F)
+    val Night200 = Color(0xFF262626)
+    val Night300 = Color(0xFF3A3A3A)
+    val Night400 = Color(0xFF242424)
+    val NightInk = Color(0xFFEDEDED)
+    val NightInkMuted = Color(0xFFA3A3A3)
+}
+
 val CodexGreen = Color(0xFF12805C)
 val CodexRed = Color(0xFFC8442D)
-private val Ink = Color.Black
-private val Paper = Color.White
 
 object CodexSpacing {
     val xSmall = 4.dp
@@ -34,8 +61,11 @@ object CodexSpacing {
     val medium = 12.dp
     val large = 16.dp
     val xLarge = 24.dp
+    val xxLarge = 32.dp
 }
 
+// Inter ships 400/500/600 only; every weight below stays inside that range so CJK glyphs
+// fall back to Noto Sans CJK instead of being synthetically emboldened.
 private val CodexSans = FontFamily(
     Font(R.font.inter_regular, FontWeight.Normal),
     Font(R.font.inter_medium, FontWeight.Medium),
@@ -43,107 +73,107 @@ private val CodexSans = FontFamily(
 )
 
 private val CodexShapes = Shapes(
-    extraSmall = RoundedCornerShape(10.dp),
+    extraSmall = RoundedCornerShape(8.dp),
     small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(18.dp),
-    extraLarge = RoundedCornerShape(24.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(32.dp),
 )
 
 private val LightColors = lightColorScheme(
-    primary = Ink,
-    onPrimary = Paper,
-    primaryContainer = Paper,
-    onPrimaryContainer = Ink,
-    secondary = Ink,
-    onSecondary = Paper,
-    secondaryContainer = Ink,
-    onSecondaryContainer = Paper,
+    primary = CodexPalette.Ink,
+    onPrimary = CodexPalette.Void,
+    primaryContainer = CodexPalette.Neutral150,
+    onPrimaryContainer = CodexPalette.Ink,
+    secondary = CodexPalette.Ink,
+    onSecondary = CodexPalette.Void,
+    secondaryContainer = CodexPalette.Neutral150,
+    onSecondaryContainer = CodexPalette.Ink,
+    tertiary = CodexPalette.InkMuted,
+    tertiaryContainer = CodexPalette.DiffAdded,
+    onTertiaryContainer = CodexPalette.OnDiffAdded,
     error = CodexRed,
-    errorContainer = Paper,
-    onErrorContainer = Ink,
-    tertiary = Ink,
-    tertiaryContainer = Paper,
-    onTertiaryContainer = Ink,
-    background = Paper,
-    onBackground = Ink,
-    surface = Paper,
-    onSurface = Ink,
-    surfaceVariant = Color(0xFFEFEFF0),
-    onSurfaceVariant = Color(0xFF4A4A4A),
-    surfaceTint = Paper,
-    surfaceBright = Paper,
-    surfaceDim = Paper,
-    surfaceContainer = Color(0xFFECECEE),
-    surfaceContainerHigh = Color(0xFFE0E0E2),
-    surfaceContainerHighest = Color(0xFFD4D4D6),
-    surfaceContainerLow = Color(0xFFF4F4F5),
-    surfaceContainerLowest = Paper,
-    inverseSurface = Ink,
-    inverseOnSurface = Paper,
-    inversePrimary = Paper,
-    outline = Color(0xFFD8D8D8),
-    outlineVariant = Color(0xFFE0E0E0),
+    errorContainer = CodexPalette.DiffRemoved,
+    onErrorContainer = CodexPalette.OnDiffRemoved,
+    background = CodexPalette.Void,
+    onBackground = CodexPalette.Ink,
+    surface = CodexPalette.Void,
+    onSurface = CodexPalette.Ink,
+    surfaceVariant = CodexPalette.Neutral150,
+    onSurfaceVariant = CodexPalette.InkMuted,
+    surfaceTint = CodexPalette.Ink,
+    surfaceBright = CodexPalette.Void,
+    surfaceDim = CodexPalette.Neutral200,
+    surfaceContainerLowest = CodexPalette.Void,
+    surfaceContainerLow = CodexPalette.Neutral50,
+    surfaceContainer = CodexPalette.Neutral100,
+    surfaceContainerHigh = CodexPalette.Neutral150,
+    surfaceContainerHighest = CodexPalette.Neutral200,
+    inverseSurface = CodexPalette.Ink,
+    inverseOnSurface = CodexPalette.Void,
+    inversePrimary = CodexPalette.Void,
+    outline = CodexPalette.Neutral400,
+    outlineVariant = CodexPalette.Neutral300,
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Paper,
-    onPrimary = Ink,
-    primaryContainer = Ink,
-    onPrimaryContainer = Paper,
-    secondary = Paper,
-    onSecondary = Ink,
-    secondaryContainer = Ink,
-    onSecondaryContainer = Paper,
+    primary = CodexPalette.NightInk,
+    onPrimary = CodexPalette.NightVoid,
+    primaryContainer = CodexPalette.Night150,
+    onPrimaryContainer = CodexPalette.NightInk,
+    secondary = CodexPalette.NightInk,
+    onSecondary = CodexPalette.NightVoid,
+    secondaryContainer = CodexPalette.Night150,
+    onSecondaryContainer = CodexPalette.NightInk,
+    tertiary = CodexPalette.NightInkMuted,
+    tertiaryContainer = Color(0xFF16301F),
+    onTertiaryContainer = Color(0xFF9FD3AE),
     error = Color(0xFFFF8A70),
-    errorContainer = Ink,
-    onErrorContainer = Paper,
-    tertiary = Paper,
-    tertiaryContainer = Ink,
-    onTertiaryContainer = Paper,
-    background = Ink,
-    onBackground = Paper,
-    surface = Ink,
-    onSurface = Paper,
-    surfaceVariant = Color(0xFF1A1A1A),
-    onSurfaceVariant = Color(0xFFB0B0B0),
-    surfaceTint = Ink,
-    surfaceBright = Ink,
-    surfaceDim = Ink,
-    surfaceContainer = Color(0xFF1A1A1A),
-    surfaceContainerHigh = Color(0xFF242424),
-    surfaceContainerHighest = Color(0xFF2A2A2A),
-    surfaceContainerLow = Color(0xFF121212),
+    errorContainer = Color(0xFF3A1A14),
+    onErrorContainer = Color(0xFFF5B7A6),
+    background = CodexPalette.NightVoid,
+    onBackground = CodexPalette.NightInk,
+    surface = CodexPalette.NightVoid,
+    onSurface = CodexPalette.NightInk,
+    surfaceVariant = CodexPalette.Night150,
+    onSurfaceVariant = CodexPalette.NightInkMuted,
+    surfaceTint = CodexPalette.NightInk,
+    surfaceBright = CodexPalette.Night200,
+    surfaceDim = CodexPalette.NightVoid,
     surfaceContainerLowest = Color(0xFF0A0A0A),
-    inverseSurface = Paper,
-    inverseOnSurface = Ink,
-    inversePrimary = Ink,
-    outline = Color(0xFF333333),
-    outlineVariant = Color(0xFF262626),
+    surfaceContainerLow = CodexPalette.Night50,
+    surfaceContainer = CodexPalette.Night100,
+    surfaceContainerHigh = CodexPalette.Night150,
+    surfaceContainerHighest = CodexPalette.Night200,
+    inverseSurface = CodexPalette.NightInk,
+    inverseOnSurface = CodexPalette.NightVoid,
+    inversePrimary = CodexPalette.NightVoid,
+    outline = CodexPalette.Night300,
+    outlineVariant = CodexPalette.Night400,
 )
 
 private val CodexTypography = Typography(
-    displayLarge = TextStyle(fontFamily = CodexSans, fontSize = 36.sp, lineHeight = 42.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.2).sp),
-    displayMedium = TextStyle(fontFamily = CodexSans, fontSize = 33.sp, lineHeight = 39.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.2).sp),
-    displaySmall = TextStyle(fontFamily = CodexSans, fontSize = 36.sp, lineHeight = 42.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.2).sp),
-    headlineLarge = TextStyle(fontFamily = CodexSans, fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-    headlineMedium = TextStyle(fontFamily = CodexSans, fontSize = 28.sp, lineHeight = 34.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-    headlineSmall = TextStyle(fontFamily = CodexSans, fontSize = 25.sp, lineHeight = 31.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-    titleLarge = TextStyle(fontFamily = CodexSans, fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-    titleMedium = TextStyle(fontFamily = CodexSans, fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.1).sp),
-    titleSmall = TextStyle(fontFamily = CodexSans, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.1).sp),
-    bodyLarge = TextStyle(fontFamily = CodexSans, fontSize = 17.sp, lineHeight = 26.sp, letterSpacing = 0.sp),
-    bodyMedium = TextStyle(fontFamily = CodexSans, fontSize = 15.sp, lineHeight = 23.sp, letterSpacing = 0.sp),
-    bodySmall = TextStyle(fontFamily = CodexSans, fontSize = 13.sp, lineHeight = 19.sp, letterSpacing = 0.sp),
-    labelLarge = TextStyle(fontFamily = CodexSans, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
+    displayLarge = TextStyle(fontFamily = CodexSans, fontSize = 28.sp, lineHeight = 36.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
+    displayMedium = TextStyle(fontFamily = CodexSans, fontSize = 24.sp, lineHeight = 32.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
+    displaySmall = TextStyle(fontFamily = CodexSans, fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
+    headlineLarge = TextStyle(fontFamily = CodexSans, fontSize = 22.sp, lineHeight = 32.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+    headlineMedium = TextStyle(fontFamily = CodexSans, fontSize = 19.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+    headlineSmall = TextStyle(fontFamily = CodexSans, fontSize = 17.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+    titleLarge = TextStyle(fontFamily = CodexSans, fontSize = 18.sp, lineHeight = 27.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+    titleMedium = TextStyle(fontFamily = CodexSans, fontSize = 16.sp, lineHeight = 25.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+    titleSmall = TextStyle(fontFamily = CodexSans, fontSize = 14.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
+    bodyLarge = TextStyle(fontFamily = CodexSans, fontSize = 17.sp, lineHeight = 30.sp, letterSpacing = 0.sp),
+    bodyMedium = TextStyle(fontFamily = CodexSans, fontSize = 15.sp, lineHeight = 26.sp, letterSpacing = 0.sp),
+    bodySmall = TextStyle(fontFamily = CodexSans, fontSize = 13.sp, lineHeight = 21.sp, letterSpacing = 0.sp),
+    labelLarge = TextStyle(fontFamily = CodexSans, fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
     labelMedium = TextStyle(fontFamily = CodexSans, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
     labelSmall = TextStyle(fontFamily = CodexSans, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
 )
 
 val MonoText = TextStyle(
     fontFamily = FontFamily.Monospace,
-    fontSize = 12.sp,
-    lineHeight = 18.sp,
+    fontSize = 13.sp,
+    lineHeight = 20.sp,
     letterSpacing = 0.sp,
 )
 
