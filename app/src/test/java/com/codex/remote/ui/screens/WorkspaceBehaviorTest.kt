@@ -3,6 +3,15 @@ package com.codex.remote.ui.screens
 import com.codex.remote.domain.PermissionMode
 import com.codex.remote.domain.TimelineItem
 import com.codex.remote.domain.TimelineKind
+import com.codex.remote.ui.chat.appendRemotePath
+import com.codex.remote.ui.chat.diffLineCounts
+import com.codex.remote.ui.chat.extractGoalSlashObjective
+import com.codex.remote.ui.chat.groupTimelineSteps
+import com.codex.remote.ui.chat.isTimelineItemRunning
+import com.codex.remote.ui.chat.normalizeLatexMarkdown
+import com.codex.remote.ui.chat.permissionModeFor
+import com.codex.remote.ui.chat.remoteParentPath
+import com.codex.remote.ui.chat.remotePathComposerToken
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -78,7 +87,7 @@ val block = "${'$'}stillRaw${'$'}"
     }
 
     @Test
-    fun adjacentCommandsArePresentedAsOneStableExpandableStep() {
+    fun aRunOfStepsCollapsesIntoOneSummaryThatKeepsItsSourceIds() {
         val timeline = listOf(
             TimelineItem("reasoning", TimelineKind.REASONING, body = "thinking"),
             TimelineItem("cmd-1", TimelineKind.COMMAND, title = "pwd", body = "/srv/app", status = "completed"),
@@ -86,13 +95,31 @@ val block = "${'$'}stillRaw${'$'}"
             TimelineItem("answer", TimelineKind.AGENT, body = "Done"),
         )
 
-        val presentation = groupConsecutiveCommands(timeline)
+        val presentation = groupTimelineSteps(timeline)
 
-        assertEquals(3, presentation.size)
-        assertEquals("运行了多个命令", presentation[1].item.title)
-        assertEquals("command-group:cmd-1", presentation[1].item.id)
-        assertEquals(listOf("cmd-1", "cmd-2"), presentation[1].sourceItemIds)
-        assertTrue(presentation[1].item.body.contains("1. pwd"))
-        assertTrue(presentation[1].item.body.contains("2. git status"))
+        assertEquals(2, presentation.size)
+        val group = presentation[0]
+        assertEquals("steps:reasoning", group.item.id)
+        assertEquals("completed", group.item.status)
+        assertEquals(listOf("reasoning", "cmd-1", "cmd-2"), group.sourceItemIds)
+        assertEquals(2, group.steps.size)
+        // Adjacent commands still fold into a single step inside the run.
+        val commands = group.steps[1]
+        assertEquals("command-group:cmd-1", commands.item.id)
+        assertEquals("运行了多个命令", commands.item.title)
+        assertTrue(commands.item.body.contains("1. pwd"))
+        assertTrue(commands.item.body.contains("2. git status"))
+        assertEquals("Done", presentation[1].item.body)
+    }
+
+    @Test
+    fun aRunningStepRunReportsInProgressSoTheSummaryStaysOpen() {
+        val presentation = groupTimelineSteps(
+            listOf(TimelineItem("tool", TimelineKind.TOOL, title = "Remote tool", status = "started")),
+        )
+
+        assertEquals(1, presentation.size)
+        assertEquals("inProgress", presentation[0].item.status)
+        assertEquals(1, presentation[0].steps.size)
     }
 }

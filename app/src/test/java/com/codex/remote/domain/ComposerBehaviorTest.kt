@@ -1,7 +1,7 @@
 package com.codex.remote.domain
 
-import com.codex.remote.ui.screens.desktopSlashCommands
-import com.codex.remote.ui.screens.modelSettingsSummary
+import com.codex.remote.ui.chat.desktopSlashCommands
+import com.codex.remote.ui.chat.modelSettingsSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue

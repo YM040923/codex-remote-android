@@ -1,5 +1,6 @@
 package com.codex.remote
 
+import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.text.Spanned
 import android.text.style.StyleSpan
@@ -19,6 +20,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onChildren
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -247,15 +249,31 @@ class WorkspaceDeviceTest {
         val state = mutableStateOf(baseState(timeline = runningTimeline, isTurnRunning = true))
         show(state)
 
-        scrollTo("timeline-tool-body-reasoning")
-        composeRule.onNodeWithText("private reasoning").assertIsDisplayed()
-        scrollTo("timeline-tool-body-command-group:cmd-1")
-        composeRule.onNodeWithText("运行了多个命令").assertExists()
-        composeRule.onNodeWithText("/workspace/demo", substring = true).assertExists()
-        scrollTo("timeline-tool-body-tool")
-        composeRule.onNodeWithText("tool details").assertIsDisplayed()
+        // A running step is a bare line: its output only exists one tap deeper, inside the sheet.
+        scrollTo("timeline-steps-steps:reasoning")
+        composeRule.onNodeWithText("正在处理 4 个步骤").assertIsDisplayed()
+        composeRule.onNodeWithText("private reasoning").assertDoesNotExist()
+        scrollTo("timeline-tool-command-group:cmd-1")
+        composeRule.onNodeWithText("运行了多个命令").assertIsDisplayed()
+        composeRule.onNodeWithText("/workspace/demo", substring = true).assertDoesNotExist()
         scrollTo("file-changes-files")
-        composeRule.onNodeWithText("+val ready = true").assertExists()
+        composeRule.onNodeWithText("+val ready = true").assertDoesNotExist()
+
+        scrollTo("timeline-tool-reasoning")
+        composeRule.onNodeWithTag("timeline-tool-reasoning").performClick()
+        composeRule.onNodeWithTag("step-detail-reasoning").assertIsDisplayed()
+        composeRule.onNodeWithText("思考过程").assertIsDisplayed()
+        composeRule.onNodeWithText("private reasoning").assertIsDisplayed()
+        composeRule.onNodeWithTag("step-detail-reasoning-close").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("step-detail-reasoning").fetchSemanticsNodes().isEmpty()
+        }
+
+        scrollTo("timeline-tool-command-group:cmd-1")
+        composeRule.onNodeWithTag("timeline-tool-command-group:cmd-1").performClick()
+        composeRule.onNodeWithTag("step-detail-command-group:cmd-1").assertIsDisplayed()
+        composeRule.onNodeWithText("/workspace/demo", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithTag("step-detail-command-group:cmd-1-close").performClick()
 
         composeRule.runOnIdle {
             state.value = state.value.copy(
@@ -265,18 +283,57 @@ class WorkspaceDeviceTest {
             )
         }
         composeRule.waitUntil(5_000) {
-            composeRule.onAllNodesWithTag("timeline-tool-body-reasoning").fetchSemanticsNodes().isEmpty()
+            composeRule.onAllNodesWithText("正在处理 4 个步骤").fetchSemanticsNodes().isEmpty()
         }
         composeRule.onNodeWithTag(COMPOSER_SEND).assertContentDescriptionEquals("发送")
 
+        scrollTo("timeline-steps-steps:reasoning")
+        composeRule.onNodeWithText("已处理 4 个步骤").assertIsDisplayed()
+        composeRule.onNodeWithTag("timeline-tool-reasoning").assertDoesNotExist()
+        composeRule.onNodeWithTag("timeline-tool-command-group:cmd-1").assertDoesNotExist()
+        composeRule.onNodeWithTag("file-changes-files").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("timeline-steps-header-steps:reasoning").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("timeline-tool-reasoning").fetchSemanticsNodes().isNotEmpty()
+        }
         scrollTo("timeline-tool-reasoning")
         composeRule.onNodeWithText("private reasoning").assertDoesNotExist()
-        scrollTo("timeline-tool-command-group:cmd-1")
-        composeRule.onNodeWithText("/workspace/demo", substring = true).assertDoesNotExist()
-        scrollTo("timeline-tool-tool")
-        composeRule.onNodeWithText("tool details").assertDoesNotExist()
         scrollTo("file-changes-files")
         composeRule.onNodeWithText("+val ready = true").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("file-changes-files").performClick()
+        composeRule.onNodeWithTag("step-detail-files-files").assertIsDisplayed()
+        composeRule.onNodeWithText("+val ready = true").assertIsDisplayed()
+    }
+
+    @Test
+    fun singleCommandSheetSplitsCommandLineFromOutput() {
+        show(
+            mutableStateOf(
+                baseState(
+                    timeline = listOf(
+                        TimelineItem(
+                            "cmd",
+                            TimelineKind.COMMAND,
+                            title = "bash scripts/deploy.sh --check",
+                            body = "rollout is stable",
+                            status = "completed",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        composeRule.onNodeWithTag("timeline-steps-header-steps:cmd").performClick()
+        scrollTo("timeline-tool-cmd")
+        composeRule.onNodeWithTag("timeline-tool-cmd").performClick()
+        composeRule.onNodeWithTag("step-detail-cmd").assertIsDisplayed()
+        composeRule.onNodeWithText("执行命令").assertIsDisplayed()
+        composeRule.onNodeWithText("命令").assertIsDisplayed()
+        // The row label and the sheet's 命令 section show the same shell line.
+        composeRule.onAllNodesWithText("bash scripts/deploy.sh --check").assertCountEquals(2)
+        composeRule.onNodeWithText("输出").assertIsDisplayed()
+        composeRule.onNodeWithText("rollout is stable").assertIsDisplayed()
     }
 
     @Test
@@ -535,7 +592,50 @@ val answer = 42
     }
 
     @Test
-    fun completedFileChangesUseStructuredExpandablePresentationAndNoChangesTab() {
+    fun connectedHeaderIsOneLineCarriedByTheDotAlone() {
+        show(mutableStateOf(baseState()))
+
+        composeRule.onNodeWithText("Thread A").assertIsDisplayed()
+        // The host string used to cost the header a second line, and repeated what the full-screen
+        // connecting state says anyway.
+        composeRule.onAllNodesWithText("10.0.2.2").assertCountEquals(0)
+    }
+
+    @Test
+    fun completedRepliesOfferCopyAndReAskTheirOwnPrompt() {
+        val callbacks = WorkspaceCallbacks()
+        val state = mutableStateOf(
+            baseState(
+                timeline = listOf(
+                    TimelineItem("ask-1", TimelineKind.USER, body = "跑一下设备测试"),
+                    TimelineItem("answer-1", TimelineKind.AGENT, body = "第一轮结论"),
+                    TimelineItem("ask-2", TimelineKind.USER, body = "再解释一遍"),
+                    TimelineItem("answer-2", TimelineKind.AGENT, body = "第二轮结论"),
+                ),
+            ),
+        )
+        show(state, callbacks)
+
+        val actions = composeRule.onNodeWithTag("reply-actions-answer-2")
+        actions.assertIsDisplayed()
+        composeRule.onAllNodesWithText("复制").assertCountEquals(2)
+        actions.onChildren()[0].performClick()
+        composeRule.onNodeWithText("已复制").assertIsDisplayed()
+        actions.onChildren()[1].performClick()
+
+        // Each reply re-asks the prompt that produced it, not whichever one came last.
+        composeRule.onNodeWithTag("reply-actions-answer-1").onChildren()[1].performClick()
+        composeRule.runOnIdle {
+            assertEquals(listOf("再解释一遍" to false, "跑一下设备测试" to false), callbacks.sentMessages)
+        }
+
+        // A running turn means the replies are not finished business, so the rows go.
+        state.value = state.value.copy(isTurnRunning = true)
+        composeRule.onAllNodesWithTag("reply-actions-answer-2").assertCountEquals(0)
+    }
+
+    @Test
+    fun completedFileChangesOpenTheirDiffInADetailSheet() {
         val files = TimelineItem(
             id = "files",
             kind = TimelineKind.FILE_CHANGE,
@@ -547,16 +647,168 @@ val answer = 42
         )
         show(mutableStateOf(baseState(timeline = listOf(files))))
 
+        // A finished run folds into one summary line, so the file list sits one tap deeper.
+        composeRule.onNodeWithText("已处理 1 个步骤").assertIsDisplayed()
+        composeRule.onNodeWithText("已编辑 2 个文件").assertDoesNotExist()
+        composeRule.onNodeWithTag("timeline-steps-header-steps:files").performClick()
         composeRule.onNodeWithText("已编辑 2 个文件").assertIsDisplayed()
         composeRule.onNodeWithText("--- a/app/src/Main.kt").assertDoesNotExist()
         composeRule.onNodeWithText("已编辑 2 个文件").performClick()
+        composeRule.onNodeWithTag("step-detail-files-files").assertIsDisplayed()
+        composeRule.onNodeWithText("文件更改").assertIsDisplayed()
         composeRule.onNodeWithText("app/src/Main.kt").assertExists()
         composeRule.onNodeWithText("app/src/Status.kt").assertExists()
         composeRule.onNodeWithText("已修改").assertExists()
         composeRule.onNodeWithText("新增").assertExists()
         composeRule.onNodeWithText("+2  -1").assertExists()
+        composeRule.onNodeWithText("--- a/app/src/Main.kt").assertExists()
+        composeRule.onNodeWithTag("step-detail-files-files-close").performClick()
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithTag("step-detail-files-files").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.onNodeWithText("已编辑 2 个文件").assertIsDisplayed()
         composeRule.onAllNodesWithText("Changes").assertCountEquals(0)
         composeRule.onAllNodesWithText("{\"changes\"", substring = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun captureBaselineLight() = captureBaseline(dark = false)
+
+    @Test
+    fun captureBaselineDark() = captureBaseline(dark = true)
+
+    private fun captureBaseline(dark: Boolean) {
+        val label = if (dark) "dark" else "light"
+        val dir = InstrumentationRegistry.getInstrumentation().targetContext
+            .getExternalFilesDir("baseline")!!
+        dir.mkdirs()
+        val all = baselineTimeline()
+        val shots = listOf(
+            "01-structure" to all.filter { it.id in setOf("ask", "reasoning", "cmd-1", "tool-1", "files") },
+            "02-prose" to all.filter { it.id in setOf("ask", "prose") },
+            "03-code" to all.filter { it.id == "code" },
+            "04-table" to all.filter { it.id == "tbl" },
+            "05-full" to all,
+        )
+        val state = mutableStateOf(baseState(timeline = shots.first().second))
+        show(state, WorkspaceCallbacks(), dark)
+        shots.forEachIndexed { index, (name, timeline) ->
+            if (index > 0) composeRule.runOnIdle { state.value = baseState(timeline = timeline) }
+            composeRule.waitForIdle()
+            Thread.sleep(if (index == 0) 700 else 500)
+            writeShot(dir, "$name-$label.png")
+        }
+
+        composeRule.runOnIdle { state.value = baseState(timeline = shots.first().second) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("timeline-steps-header-steps:reasoning").performClick()
+        composeRule.waitForIdle()
+        Thread.sleep(500)
+        writeShot(dir, "06-steps-open-$label.png")
+
+        val streamParagraphs = (1..6).joinToString("\n\n") {
+            "第 $it 段：灰度期间每个调用点都要能单独回滚，否则线上出问题时无法定位是哪一处引入的。"
+        }
+        composeRule.runOnIdle {
+            state.value = baseState(
+                timeline = listOf(
+                    TimelineItem("ask-stream", TimelineKind.USER, body = "再详细说说灰度方案", status = "completed"),
+                    TimelineItem("stream", TimelineKind.AGENT, body = streamParagraphs, status = "inProgress"),
+                ),
+                isTurnRunning = true,
+            )
+        }
+        composeRule.waitForIdle()
+        Thread.sleep(500)
+        writeShot(dir, "07-streaming-$label.png")
+
+        // A turn that is still working: the run stays unfolded and every step is one bare line.
+        val runningSteps = listOf(
+            TimelineItem("ask-steps", TimelineKind.USER, body = "把发布脚本改成幂等的", status = "completed"),
+            TimelineItem(
+                "reason-steps",
+                TimelineKind.REASONING,
+                title = "深度思考",
+                body = "先确认脚本能否重入，再决定改哪一段。",
+                status = "completed",
+            ),
+            TimelineItem(
+                "cmd-steps",
+                TimelineKind.COMMAND,
+                title = "bash scripts/deploy.sh --check",
+                body = "rollout 稳定，没有残留的 job",
+                status = "completed",
+            ),
+            TimelineItem(
+                "files-steps",
+                TimelineKind.FILE_CHANGE,
+                status = "completed",
+                fileChanges = listOf(
+                    FileChangeSummary(
+                        "scripts/deploy.sh",
+                        "update",
+                        "--- a/scripts/deploy.sh\n+++ b/scripts/deploy.sh\n-bash deploy.sh\n+set -euo pipefail\n+for attempt in 1 2 3; do\n+  kubectl rollout status deploy/api\n+done",
+                    ),
+                ),
+            ),
+            TimelineItem(
+                "push-steps",
+                TimelineKind.COMMAND,
+                title = "git push origin HEAD",
+                body = "To github.com:acme/demo.git",
+                status = "inProgress",
+            ),
+        )
+        composeRule.runOnIdle { state.value = baseState(timeline = runningSteps, isTurnRunning = true) }
+        composeRule.waitForIdle()
+        Thread.sleep(500)
+        writeShot(dir, "08-running-steps-$label.png")
+
+        composeRule.onNodeWithTag("file-changes-files-steps").performClick()
+        composeRule.waitForIdle()
+        Thread.sleep(800)
+        writeShot(dir, "09-detail-sheet-$label.png")
+
+        composeRule.onNodeWithTag("step-detail-files-files-steps-close").performClick()
+        composeRule.waitForIdle()
+        Thread.sleep(600)
+        composeRule.onNodeWithTag("timeline-tool-cmd-steps").performClick()
+        composeRule.waitForIdle()
+        Thread.sleep(800)
+        writeShot(dir, "10-command-sheet-$label.png")
+        composeRule.onNodeWithTag("step-detail-cmd-steps-close").performClick()
+        composeRule.waitForIdle()
+        Thread.sleep(600)
+
+        // A settled turn: the reply sits bare with its actions under it.
+        composeRule.runOnIdle {
+            state.value = baseState(
+                timeline = listOf(
+                    TimelineItem("ask-final", TimelineKind.USER, body = "把发布脚本改成幂等的", status = "completed"),
+                    TimelineItem("answer-final", TimelineKind.AGENT, body = baselineProse, status = "completed"),
+                ),
+            )
+        }
+        composeRule.waitForIdle()
+        Thread.sleep(500)
+        writeShot(dir, "11-reply-actions-$label.png")
+
+        // Goal mode: the chip sits on the text's own line, above the placeholder.
+        composeRule.onNodeWithTag(COMPOSER_INPUT).performTextInput("/goal")
+        composeRule.onNodeWithTag(COMPOSER_SEND).performClick()
+        composeRule.waitForIdle()
+        Thread.sleep(700)
+        writeShot(dir, "12-goal-chip-$label.png")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun writeShot(dir: java.io.File, name: String) {
+        val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+        assertNotNull(bitmap)
+        java.io.File(dir, name).outputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+        bitmap.recycle()
     }
 
     private fun scrollTo(tag: String) {
@@ -570,9 +822,10 @@ val answer = 42
     private fun show(
         state: MutableState<AppUiState>,
         callbacks: WorkspaceCallbacks = WorkspaceCallbacks(),
+        darkTheme: Boolean = false,
     ) {
         composeRule.setContent {
-            CodexRemoteTheme(darkTheme = false) {
+            CodexRemoteTheme(darkTheme = darkTheme) {
                 WorkspaceScreen(
                     state = state.value,
                     onOpenConnections = {},
@@ -766,6 +1019,104 @@ private fun baseState(
         isRestoringLastConnection = false,
     )
 }
+
+private val baselineProse = """
+## 这次重构的结论
+
+登录链路从 `SessionRepository` 迁到了 **AuthGateway**，一共影响 3 个调用点。整体方向没问题，但有两处需要在上线前收口。
+
+### 关键路径
+
+1. 点击登录后由 `AuthGateway.signIn()` 申请短期 access token
+2. 后台协程每 15 分钟触发一次 `refreshIfNeeded()`
+3. 连续失败两次后降级到 `OfflineQueue` 排队重试
+
+> 注意：`OfflineQueue` 目前没有容量上限，长会话会持续增长。
+""".trimIndent()
+
+private val baselineCode = """
+### 改动位置
+
+```kotlin
+suspend fun refreshIfNeeded() {
+    if (clock.now() - lastRefresh > TOKEN_TTL) {
+        gateway.refresh(scope = this)
+    }
+}
+```
+""".trimIndent()
+
+private val baselineTableOnly = """
+| 模块 | 风险 | 建议 |
+| --- | --- | --- |
+| AuthGateway | 中 | 补超时与重试 |
+| OfflineQueue | 高 | 设容量上限 |
+""".trimIndent()
+
+private val baselineTable = """
+| 模块 | 风险 | 建议 |
+| --- | --- | --- |
+| AuthGateway | 中 | 补超时与重试 |
+| OfflineQueue | 高 | 设容量上限 |
+
+公式与正文混排：${'$'}E = mc^2${'$'}，用来检查基线与行距。
+
+- [x] 迁移旧调用点
+- [ ] 补齐单元测试
+""".trimIndent()
+
+private fun baselineTimeline(): List<TimelineItem> = listOf(
+    TimelineItem("ask", TimelineKind.USER, body = "帮我梳理这次登录重构改了哪些地方，风险点列一下"),
+    TimelineItem(
+        id = "reasoning",
+        kind = TimelineKind.REASONING,
+        title = "Reasoning",
+        body = "先比较 AuthGateway 与 SessionRepository 的职责边界，再统计受影响的调用点。",
+        status = "completed",
+    ),
+    TimelineItem(
+        id = "cmd-1",
+        kind = TimelineKind.COMMAND,
+        title = "git diff --stat HEAD~1",
+        body = " app/src/AuthGateway.kt        | 64 +++++++++++++++++++--\n" +
+            " app/src/SessionRepository.kt  | 38 -----------------",
+        status = "completed",
+    ),
+    TimelineItem(
+        id = "tool-1",
+        kind = TimelineKind.TOOL,
+        title = "workspace_search",
+        body = "命中 3 处：MainActivity.kt:84、TokenStore.kt:21、OfflineQueue.kt:7",
+        status = "completed",
+    ),
+    TimelineItem(
+        id = "files",
+        kind = TimelineKind.FILE_CHANGE,
+        status = "completed",
+        fileChanges = listOf(
+            FileChangeSummary(
+                "app/src/AuthGateway.kt",
+                "update",
+                "--- a/app/src/AuthGateway.kt\n+++ b/app/src/AuthGateway.kt\n-    val ttl = 900\n+    val ttl = 1800\n+    private val mutex = Mutex()",
+            ),
+            FileChangeSummary(
+                "app/src/OfflineQueue.kt",
+                "add",
+                "--- /dev/null\n+++ b/app/src/OfflineQueue.kt\n+class OfflineQueue {\n+    private val pending = ArrayDeque<Suspendable>",
+            ),
+        ),
+    ),
+    TimelineItem("prose", TimelineKind.AGENT, body = baselineProse),
+    TimelineItem("code", TimelineKind.AGENT, body = baselineCode),
+    TimelineItem("table", TimelineKind.AGENT, body = baselineTable),
+    TimelineItem("tbl", TimelineKind.AGENT, body = baselineTableOnly),
+    TimelineItem("ask-2", TimelineKind.USER, body = "OfflineQueue 的上限你建议设多少？"),
+    TimelineItem(
+        "answer",
+        TimelineKind.AGENT,
+        body = "先按 **256** 条来设，超过就从队首丢弃并打点；这条链路里单条最长是 4 KB，256 条上限约 1 MB 内存，够用也不会拖慢冷启动。",
+    ),
+)
 
 private fun thread(id: String, title: String) = RemoteThread(
     id = id,
