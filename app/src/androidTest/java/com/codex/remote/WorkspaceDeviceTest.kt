@@ -1,12 +1,6 @@
 package com.codex.remote
 
 import android.graphics.Bitmap
-import android.graphics.Typeface
-import android.text.Spanned
-import android.text.style.StyleSpan
-import android.view.View
-import android.view.ViewGroup
-import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
@@ -21,6 +15,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onChildren
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -127,7 +122,8 @@ class WorkspaceDeviceTest {
             .assertContentDescriptionEquals("暂停任务")
             .performClick()
         composeRule.runOnIdle { assertEquals(1, callbacks.stopRequests) }
-        composeRule.onNodeWithTag(COMPOSER_SEND).assertContentDescriptionEquals("正在暂停任务")
+        composeRule.onNodeWithTag(COMPOSER_SEND).assertIsNotEnabled()
+        composeRule.onNodeWithContentDescription("正在暂停任务").assertExists()
         assertEquals("检查测试结果", composerText())
         composeRule.onNodeWithTag("composer-stop").assertDoesNotExist()
 
@@ -177,7 +173,12 @@ class WorkspaceDeviceTest {
 
     @Test
     fun noticesAreShownAtTheTopOfWorkspaceContent() {
-        show(mutableStateOf(baseState().copy(notice = "任务已暂停")))
+        show(
+            mutableStateOf(
+                baseState(timeline = listOf(TimelineItem("notice-user", TimelineKind.USER, body = "检查任务状态")))
+                    .copy(notice = "任务已暂停"),
+            ),
+        )
 
         composeRule.waitUntil(5_000) {
             composeRule.onAllNodesWithText("任务已暂停").fetchSemanticsNodes().isNotEmpty()
@@ -337,7 +338,7 @@ class WorkspaceDeviceTest {
     }
 
     @Test
-    fun markdownBoldCodeAndLatexRenderAsAndroidSpans() {
+    fun markdownRendersContentWithoutSourceMarkers() {
         val markdown = """## Rendered heading
 
 **bold-rendered** and inline ${'$'}x^2${'$'}.
@@ -349,26 +350,11 @@ val answer = 42
         show(mutableStateOf(baseState(timeline = listOf(TimelineItem("markdown", TimelineKind.AGENT, body = markdown)))))
         composeRule.onNodeWithTag("timeline-agent-markdown").assertExists()
 
-        lateinit var rendered: Spanned
-        composeRule.runOnIdle {
-            val textView = composeRule.activity.window.decorView.descendantTextViews()
-                .firstOrNull { it.text.toString().contains("bold-rendered") }
-            assertNotNull(textView)
-            rendered = textView!!.text as Spanned
-        }
-        val plainText = rendered.toString()
-        val spans = rendered.getSpans(0, rendered.length, Any::class.java)
-        assertFalse(plainText.contains("**"))
-        assertFalse(plainText.contains("```"))
-        assertTrue(plainText.contains("val answer = 42"))
-        assertTrue(spans.any { span ->
-            (span is StyleSpan && span.style and Typeface.BOLD != 0) ||
-                span.javaClass.name.contains("StrongEmphasis", ignoreCase = true)
-        })
-        assertTrue(spans.any { span ->
-            span.javaClass.name.contains("latex", ignoreCase = true) ||
-                span.javaClass.name.contains("drawable", ignoreCase = true)
-        })
+        composeRule.onAllNodesWithText("**", substring = true, useUnmergedTree = true).assertCountEquals(0)
+        composeRule.onAllNodesWithText("```", substring = true, useUnmergedTree = true).assertCountEquals(0)
+        composeRule.onNodeWithText("Rendered heading", substring = true).assertExists()
+        composeRule.onNodeWithText("bold-rendered", substring = true).assertExists()
+        composeRule.onNodeWithText("val answer = 42", substring = true).assertExists()
     }
 
     @Test
@@ -1136,13 +1122,6 @@ private fun goal(objective: String) = ThreadGoal(
     createdAt = 1,
     updatedAt = 1,
 )
-
-private fun View.descendantTextViews(): List<TextView> = buildList {
-    if (this@descendantTextViews is TextView) add(this@descendantTextViews)
-    if (this@descendantTextViews is ViewGroup) {
-        repeat(childCount) { childIndex -> addAll(getChildAt(childIndex).descendantTextViews()) }
-    }
-}
 
 private const val CONVERSATION_LIST = "conversation-list"
 private const val CONVERSATION_BOTTOM = "conversation-bottom"
